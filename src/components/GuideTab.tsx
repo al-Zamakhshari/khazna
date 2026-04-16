@@ -1,5 +1,5 @@
 import React from 'react';
-import { Shield, Key, Database, AlertTriangle, Send, FileLock, Download, RefreshCw } from 'lucide-react';
+import { Shield, AlertTriangle, FileLock, Download, RefreshCw } from 'lucide-react';
 
 export const GuideTab: React.FC = () => {
   return (
