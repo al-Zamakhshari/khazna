@@ -1,73 +1,37 @@
-# React + TypeScript + Vite
+# 🛡️ Khazna (خزنة)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+**Khazna** (Arabic for *Vault* or *Safe*) is a modern, web-based encryption tool built for the age of quantum computing. It allows you to protect your sensitive text and files using world-class Post-Quantum Cryptography (PQC).
 
-Currently, two official plugins are available:
+## 🚀 Live Demo
+**[Access your Khazna here](https://al-zamakhshari.github.io/khazna/)**
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## ✨ Key Features
+- **Quantum-Resistant:** Powered by **ML-KEM-768** (FIPS 203), the latest global standard for post-quantum key encapsulation.
+- **Hybrid Encryption:** Uses **AES-256-GCM** for high-speed, authenticated data encryption.
+- **Zero-Knowledge:** Everything happens 100% in your browser. Keys and messages never touch a server.
+- **Encrypted Vault:** Store multiple identities and contacts locally, protected by a Master Password (hardened with PBKDF2).
+- **File Support:** Encrypt and decrypt small files (PDFs, images, etc.) into the `.khazna` format.
+- **Portable & Offline:** Fully functional Progressive Web App (PWA) that works without an internet connection once loaded.
+- **Privacy First:** Includes an "Auto-Lock" timer and hidden key toggles for shoulder-surfing protection.
 
-## React Compiler
+## 🛠️ Technology Stack
+- **Framework:** React 19 + TypeScript
+- **Bundler:** Vite 8
+- **Cryptography:** 
+  - `@noble/post-quantum` (ML-KEM)
+  - `@noble/ciphers` (AES-GCM)
+  - `@noble/hashes` (SHA-256, PBKDF2)
+- **Icons:** Lucide React
+- **Deployment:** GitHub Actions + GitHub Pages
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## 📖 How to Use
+1. **Initialize your Vault:** Set a Master Password to protect your local data.
+2. **Generate an Identity:** Create a named identity to get your **Khazna Address** (Public) and **Master Key** (Private).
+3. **Encrypt:** Paste a recipient's address, type your message or drop a file, and generate an "Encrypted Bundle."
+4. **Decrypt:** Use your Master Key to reveal messages or files sent to you.
 
-## Expanding the ESLint configuration
+## 🔒 Security Audit
+This codebase has undergone a manual security review and a two-pass SAST analysis to ensure cryptographic integrity and data privacy.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+---
+Built with ❤️ by [al-Zamakhshari](https://github.com/al-Zamakhshari)
