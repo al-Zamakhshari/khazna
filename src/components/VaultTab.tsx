@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { type PQCKeyPair } from '../utils/crypto';
-import { Lock, Unlock, Shield, User, Users, Plus, Trash2, Eye, EyeOff, FolderPlus, QrCode, Copy, Download, PlusCircle, Check, RefreshCw, Upload, FileJson } from 'lucide-react';
+import { Lock, Unlock, Shield, User, Users, Plus, Trash2, Eye, EyeOff, FolderPlus, QrCode, Copy, Download, PlusCircle, Check, RefreshCw, Upload, FileJson, Cloud, CloudDownload, CloudUpload } from 'lucide-react';
 import { useVault } from '../hooks/useVault';
 import { QRCodeSVG } from 'qrcode.react';
+import { getGoogleAccessToken, uploadToDrive, findBackupFile, downloadFromDrive } from '../utils/googleDrive';
 
 interface VaultTabProps {
   manager: ReturnType<typeof useVault>;
@@ -20,6 +21,8 @@ export const VaultTab: React.FC<VaultTabProps> = ({ manager, activeIdentity, onI
   const [showKeysMap, setShowKeysMap] = useState<Record<string, boolean>>({});
   const [showQRMap, setShowQRMap] = useState<Record<string, boolean>>({});
   const [isCreating, setIsCreating] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('');
 
   const { vault, isLocked, isNew, error, unlock, initialize, addIdentity, addContact, removeItem, reset } = manager;
 
@@ -55,6 +58,49 @@ export const VaultTab: React.FC<VaultTabProps> = ({ manager, activeIdentity, onI
     reader.readAsText(file);
   };
 
+  const syncToCloud = async () => {
+    try {
+      setIsSyncing(true);
+      setSyncStatus('Authorizing...');
+      const token = await getGoogleAccessToken();
+      
+      setSyncStatus('Uploading...');
+      const encryptedData = localStorage.getItem('khazna_v2_vault');
+      if (!encryptedData) throw new Error('No local data to sync');
+      
+      await uploadToDrive(token, encryptedData);
+      setSyncStatus('✅ Synced to Cloud');
+      setTimeout(() => setSyncStatus(''), 3000);
+    } catch (err: any) {
+      setSyncStatus(`❌ Error: ${err.message || 'Sync failed'}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const restoreFromCloud = async () => {
+    try {
+      setIsSyncing(true);
+      setSyncStatus('Authorizing...');
+      const token = await getGoogleAccessToken();
+      
+      setSyncStatus('Searching for backup...');
+      const fileInfo = await findBackupFile(token);
+      if (!fileInfo) throw new Error('No backup found in Google Drive');
+      
+      if (!confirm(`Restore backup from ${new Date(fileInfo.modifiedTime).toLocaleString()}? Current local data will be replaced.`)) return;
+      
+      setSyncStatus('Downloading...');
+      const content = await downloadFromDrive(token, fileInfo.id);
+      localStorage.setItem('khazna_v2_vault', content);
+      window.location.reload();
+    } catch (err: any) {
+      setSyncStatus(`❌ Error: ${err.message || 'Restore failed'}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   if (isNew) {
     return (
       <div className="space-y-6">
@@ -68,9 +114,22 @@ export const VaultTab: React.FC<VaultTabProps> = ({ manager, activeIdentity, onI
         <button className="btn" onClick={() => initialize(pwdInput)} disabled={!pwdInput || pwdInput !== confirmPwd}>
           Initialize Vault
         </button>
-        <div style={{ marginTop: '2rem', padding: '1.5rem', border: '1px dashed var(--border)', borderRadius: 'var(--radius)' }}>
-          <label style={{ marginBottom: '1rem' }}><Upload size={16} /> Restore from Backup</label>
-          <input type="file" accept=".json" onChange={handleRestore} />
+        
+        <div className="card" style={{ marginTop: '2rem', padding: '1.5rem', borderStyle: 'dashed' }}>
+          <h4 style={{ marginTop: 0, marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Cloud size={18} /> Cloud Recovery
+          </h4>
+          <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
+            Already have a vault synced to Google Drive? Restore it here.
+          </p>
+          <button className="btn" style={{ background: 'var(--text-muted)' }} onClick={restoreFromCloud} disabled={isSyncing}>
+            {isSyncing ? syncStatus : 'Restore from Google Drive'}
+          </button>
+          
+          <div style={{ marginTop: '1.5rem', paddingTop: '1.5rem', borderTop: '1px solid var(--border)' }}>
+            <label style={{ marginBottom: '1rem', display: 'block' }}><Upload size={16} /> Restore from .json file</label>
+            <input type="file" accept=".json" onChange={handleRestore} />
+          </div>
         </div>
       </div>
     );
@@ -109,13 +168,13 @@ export const VaultTab: React.FC<VaultTabProps> = ({ manager, activeIdentity, onI
     <div className="space-y-8">
       <div className="tabs">
         <button className={`tab-btn ${activeSubTab === 'identities' ? 'active' : ''}`} onClick={() => setActiveSubTab('identities')}>
-          <User size={16} /> Identities
+          <User size={16} /> My Identities
         </button>
         <button className={`tab-btn ${activeSubTab === 'contacts' ? 'active' : ''}`} onClick={() => setActiveSubTab('contacts')}>
           <Users size={16} /> Contacts
         </button>
         <button className={`tab-btn ${activeSubTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveSubTab('settings')}>
-          Vault Backup
+          Sync & Backup
         </button>
       </div>
 
@@ -230,33 +289,47 @@ export const VaultTab: React.FC<VaultTabProps> = ({ manager, activeIdentity, onI
 
       {activeSubTab === 'settings' && (
         <div className="space-y-6">
-          <div className="card" style={{ padding: '2rem', textAlign: 'center' }}>
-            <FileJson size={48} style={{ margin: '0 auto 1.5rem', color: 'var(--primary)' }} />
-            <h3>Export Your Vault</h3>
+          <div className="card" style={{ padding: '2rem', textAlign: 'center', borderColor: 'var(--primary)' }}>
+            <Cloud size={48} style={{ margin: '0 auto 1.5rem', color: 'var(--primary)' }} />
+            <h3>Google Drive Sync</h3>
             <p style={{ color: 'var(--text-muted)', marginBottom: '2rem' }}>
-              Download your encrypted vault data as a JSON file. You can use this file to restore your identities and contacts on another browser or device.
+              Securely sync your encrypted vault to your personal Google Drive. 
+              This allows you to access your keys on any device.
             </p>
-            <button className="btn" onClick={handleBackup}>
-              <Download size={18} style={{ marginRight: '8px' }} /> Download Backup File
-            </button>
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <button className="btn" onClick={syncToCloud} disabled={isSyncing}>
+                <CloudUpload size={18} style={{ marginRight: '8px' }} />
+                {isSyncing ? 'Syncing...' : 'Sync to Cloud'}
+              </button>
+              <button className="btn" style={{ background: 'var(--text-muted)' }} onClick={restoreFromCloud} disabled={isSyncing}>
+                <CloudDownload size={18} style={{ marginRight: '8px' }} />
+                Restore from Cloud
+              </button>
+            </div>
+            {syncStatus && (
+              <div className="alert alert-info" style={{ marginTop: '1.5rem', marginBottom: 0 }}>
+                {syncStatus}
+              </div>
+            )}
           </div>
 
-          <div className="card" style={{ padding: '2rem', textAlign: 'center', borderStyle: 'dashed' }}>
-            <Upload size={48} style={{ margin: '0 auto 1.5rem', color: 'var(--text-muted)' }} />
-            <h3>Restore From Backup</h3>
-            <p style={{ color: 'var(--text-muted)', marginBottom: '2rem' }}>
-              Select a previously exported <code>.json</code> backup file to restore your data. Note: You will still need the <strong>original master password</strong> to unlock it.
-            </p>
-            <input 
-              type="file" 
-              accept=".json" 
-              onChange={handleRestore} 
-              style={{ display: 'none' }} 
-              id="restore-upload" 
-            />
-            <button className="btn" style={{ background: 'var(--text-muted)' }} onClick={() => document.getElementById('restore-upload')?.click()}>
-              Select Backup File
-            </button>
+          <div style={{ display: 'flex', gap: '1.5rem' }}>
+            <div className="card" style={{ flex: 1, padding: '1.5rem', textAlign: 'center' }}>
+              <FileJson size={24} style={{ margin: '0 auto 1rem', color: 'var(--text-muted)' }} />
+              <h4 style={{ margin: '0 0 1rem 0' }}>Manual Backup</h4>
+              <button className="copy-btn" style={{ margin: '0 auto' }} onClick={handleBackup}>
+                <Download size={14} /> Download .json
+              </button>
+            </div>
+
+            <div className="card" style={{ flex: 1, padding: '1.5rem', textAlign: 'center', borderStyle: 'dashed' }}>
+              <Upload size={24} style={{ margin: '0 auto 1rem', color: 'var(--text-muted)' }} />
+              <h4 style={{ margin: '0 0 1rem 0' }}>Manual Restore</h4>
+              <input type="file" accept=".json" onChange={handleRestore} style={{ display: 'none' }} id="restore-upload-manual" />
+              <button className="copy-btn" style={{ margin: '0 auto' }} onClick={() => document.getElementById('restore-upload-manual')?.click()}>
+                Select File
+              </button>
+            </div>
           </div>
         </div>
       )}
