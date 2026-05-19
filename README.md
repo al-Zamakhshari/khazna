@@ -6,21 +6,22 @@
 **[Access your Khazna here](https://al-zamakhshari.github.io/khazna/)**
 
 ## ✨ Key Features
-- **Quantum-Resistant:** Powered by **ML-KEM-768** (FIPS 203), the latest global standard for post-quantum key encapsulation.
-- **Hybrid Encryption:** Uses **AES-256-GCM** for high-speed, authenticated data encryption.
+- **Hybrid Post-Quantum KEM:** Combines **ML-KEM-768** (FIPS 203) with **X25519** (Curve25519 ECDH). Both shared secrets are merged via **HKDF-SHA-256**, so security holds even if one algorithm is broken — quantum or classical.
+- **Authenticated Encryption:** **AES-256-GCM** protects all payload data with integrity guarantees.
 - **Zero-Knowledge:** Everything happens 100% in your browser. Keys and messages never touch a server.
-- **Encrypted Vault:** Store multiple identities and contacts locally, protected by a Master Password (hardened with PBKDF2).
-- **File Support:** Encrypt and decrypt small files (PDFs, images, etc.) into the `.khazna` format.
+- **Encrypted Vault:** Store multiple identities and contacts locally, protected by a Master Password (PBKDF2-SHA-256, 100 000 iterations, async to keep the UI responsive).
+- **File Support:** Encrypt and decrypt any file into the `.khazna` format.
 - **Portable & Offline:** Fully functional Progressive Web App (PWA) that works without an internet connection once loaded.
 - **Privacy First:** Includes an "Auto-Lock" timer and hidden key toggles for shoulder-surfing protection.
 
 ## 🛠️ Technology Stack
 - **Framework:** React 19 + TypeScript
 - **Bundler:** Vite 8
-- **Cryptography:** 
-  - `@noble/post-quantum` (ML-KEM)
-  - `@noble/ciphers` (AES-GCM)
-  - `@noble/hashes` (SHA-256, PBKDF2)
+- **Cryptography:**
+  - `@noble/post-quantum` (ML-KEM-768)
+  - `@noble/curves` (X25519)
+  - `@noble/ciphers` (AES-256-GCM)
+  - `@noble/hashes` (SHA-256, PBKDF2, HKDF)
 - **Icons:** Lucide React
 - **Deployment:** GitHub Actions + GitHub Pages
 

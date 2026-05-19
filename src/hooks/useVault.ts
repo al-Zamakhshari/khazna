@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { encryptVault, decryptVault, type KhaznaVault, generateKeyPair } from '../utils/crypto';
+import { encryptVault, decryptVault, type KhaznaVault, generateKeyPair, VAULT_KEY } from '../utils/crypto';
 
 export function useVault() {
   const [vault, setVault] = useState<KhaznaVault | null>(null);
@@ -7,8 +7,6 @@ export function useVault() {
   const [isNew, setIsNew] = useState(false);
   const [error, setError] = useState('');
   const [password, setMasterPassword] = useState('');
-
-  const VAULT_KEY = 'khazna_v2_vault';
 
   useEffect(() => {
     const saved = localStorage.getItem(VAULT_KEY);
@@ -28,7 +26,7 @@ export function useVault() {
       setIsNew(false);
       setError('');
       return true;
-    } catch (e) {
+    } catch {
       setError('Failed to initialize vault.');
       return false;
     }
@@ -44,7 +42,7 @@ export function useVault() {
       setIsLocked(false);
       setError('');
       return true;
-    } catch (e) {
+    } catch {
       setError('Invalid password.');
       return false;
     }
@@ -56,27 +54,28 @@ export function useVault() {
       const encrypted = await encryptVault(updated, password);
       localStorage.setItem(VAULT_KEY, encrypted);
       setVault(updated);
-    } catch (e) {
+    } catch {
       setError('Failed to save changes.');
     }
   }, [password]);
 
   const addIdentity = useCallback((name: string) => {
-    if (!vault) return;
-    const newKeys = generateKeyPair();
+    if (!vault) return null;
+    const id = crypto.randomUUID();
+    const keys = generateKeyPair();
     const updated = {
       ...vault,
-      identities: [...vault.identities, { id: crypto.randomUUID(), name, keys: newKeys }]
+      identities: [...vault.identities, { id, name, keys }],
     };
     save(updated);
-    return newKeys;
+    return { id, name, keys };
   }, [vault, save]);
 
   const addContact = useCallback((name: string, publicKey: string) => {
     if (!vault) return;
     const updated = {
       ...vault,
-      contacts: [...vault.contacts, { id: crypto.randomUUID(), name, publicKey }]
+      contacts: [...vault.contacts, { id: crypto.randomUUID(), name, publicKey }],
     };
     save(updated);
   }, [vault, save]);
@@ -85,7 +84,7 @@ export function useVault() {
     if (!vault) return;
     const updated = {
       ...vault,
-      [type]: vault[type].filter(item => item.id !== id)
+      [type]: vault[type].filter(item => item.id !== id),
     };
     save(updated);
   }, [vault, save]);
@@ -116,6 +115,6 @@ export function useVault() {
     removeItem,
     lock: lockVault,
     reset,
-    setError
+    setError,
   };
 }

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "@noble/post-quantum": "^0.6.1",
     "canvas-confetti": "^1.9.4",
@@ -18,7 +19,6 @@
     "qrcode.react": "^4.2.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "sharp": "^0.34.5",
     "vite-plugin-pwa": "^1.2.0"
   },
   "devDependencies": {
@@ -34,6 +34,7 @@
     "globals": "^17.4.0",
     "typescript": "~6.0.2",
     "typescript-eslint": "^8.58.0",
+    "sharp": "^0.34.5",
     "vite": "^8.0.4"
   }
 }
