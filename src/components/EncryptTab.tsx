@@ -75,6 +75,10 @@ export const EncryptTab: React.FC<EncryptTabProps> = ({ keys, prefilledKey }) =>
 
   return (
     <div className="space-y-6">
+      <div className="hint">
+        <span>Use this to encrypt a message or file for manual sharing (email, Signal, etc.). For direct Nostr messaging, use the <strong>Messages</strong> tab instead.</span>
+      </div>
+
       {/* Recipient key */}
       <div
         className={`form-group drop-zone ${isDragging ? 'active' : ''}`}

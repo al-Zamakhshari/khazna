@@ -26,7 +26,10 @@ function App() {
   const [activeIdentity,  setActiveIdentity]  = useState<ActiveIdentity | null>(null)
   const [targetPublicKey, setTargetPublicKey] = useState<string>('')
   const [showHelp,        setShowHelp]        = useState(false)
-  const [theme,           setTheme]           = useState<'light' | 'dark'>(
+  const [showFooterTip,   setShowFooterTip]   = useState(
+    !localStorage.getItem('khazna_tip_seen')
+  )
+  const [theme, setTheme] = useState<'light' | 'dark'>(
     (localStorage.getItem('theme') as 'light' | 'dark') || 'light'
   )
 
@@ -41,6 +44,24 @@ function App() {
     return () => window.removeEventListener('keydown', h);
   }, []);
 
+  // Auto-select the only identity whenever the vault unlocks or gains its first identity.
+  const identityCount = vm.vault?.identities.length ?? 0;
+  useEffect(() => {
+    if (vm.isLocked || activeIdentity || !vm.vault) return;
+    if (identityCount === 1) {
+      const id = vm.vault.identities[0];
+      setActiveIdentity({ name: id.name, keys: id.keys });
+    }
+  }, [vm.isLocked, identityCount]);
+
+  // Dismiss the "stored locally" footer tip once the vault has been unlocked at least once.
+  useEffect(() => {
+    if (!vm.isLocked && showFooterTip) {
+      localStorage.setItem('khazna_tip_seen', '1');
+      setShowFooterTip(false);
+    }
+  }, [vm.isLocked]);
+
   const toggleTheme = () => setTheme(p => p === 'light' ? 'dark' : 'light');
 
   const logout = () => {
@@ -49,31 +70,29 @@ function App() {
     setActiveTab('vault');
   };
 
-  // ── Nostr / session / prekey wiring ──────────────────────────────────────────
+  // ── Nostr / session / prekey handlers ──────────────────────────────────────
 
-  const handleSetupNostr = async () => { await vm.initNostr(); };
+  // Returns the new key so MessagesTab can publish profile+prekeys in one shot.
+  const handleSetupNostr = async () => vm.initNostr();
+
+  const handleEnsureSession = async (): Promise<string | null> => {
+    const keys = await vm.ensureSessionKey();
+    return keys?.publicKey ?? null;
+  };
 
   const handlePublishProfile = async (displayName: string, sessionPub?: string) => {
     if (!vm.vault?.nostrPrivateKey || !activeIdentity) return;
-    const event = buildProfileEvent(
+    await publishEvent(buildProfileEvent(
       displayName,
       activeIdentity.keys.publicKey,
       vm.vault.nostrPrivateKey,
       sessionPub,
-    );
-    await publishEvent(event);
+    ));
   };
 
-  const handleRotateSession = async () => {
-    await vm.rotateSessionKey();
-    // caller (MessagesTab) will publish profile with the new session key
-  };
+  const handleRotateSession = async () => { await vm.rotateSessionKey(); };
+  const handleGeneratePrekeys = async () => vm.generatePrekeys();
 
-  const handleGeneratePrekeys = async () => {
-    return vm.generatePrekeys();
-  };
-
-  // keyOps passed into useNostr via MessagesTab
   const keyOps = {
     longTermKeys:         activeIdentity?.keys ?? null,
     sessionKeys:          vm.vault?.sessionKey?.keys ?? null,
@@ -95,7 +114,8 @@ function App() {
         </div>
         <div className="header-actions">
           <button className="header-btn" onClick={() => setShowHelp(true)}>
-            <HelpCircle size={15} /> Help
+            <HelpCircle size={15} />
+            <span className="tab-label">Help</span>
           </button>
           <button className="header-btn icon-only" onClick={toggleTheme}
             title={theme === 'light' ? 'Dark mode' : 'Light mode'}>
@@ -113,23 +133,23 @@ function App() {
         {activeIdentity && (
           <div className="identity-bar">
             <User size={13} />
-            <span>Active identity: <strong>{activeIdentity.name}</strong></span>
+            <span>Active: <strong>{activeIdentity.name}</strong></span>
             <button className="deselect-btn" onClick={() => setActiveIdentity(null)}>Deselect</button>
           </div>
         )}
 
         <nav className="tabs">
           <button className={`tab-btn ${activeTab === 'vault'    ? 'active' : ''}`} onClick={() => setActiveTab('vault')}>
-            <Database size={15} /> Vault
+            <Database size={15} /><span className="tab-label">Vault</span>
           </button>
           <button className={`tab-btn ${activeTab === 'messages' ? 'active' : ''}`} onClick={() => setActiveTab('messages')}>
-            <MessageSquare size={15} /> Messages
+            <MessageSquare size={15} /><span className="tab-label">Messages</span>
           </button>
           <button className={`tab-btn ${activeTab === 'encrypt'  ? 'active' : ''}`} onClick={() => setActiveTab('encrypt')}>
-            <Lock size={15} /> Encrypt
+            <Lock size={15} /><span className="tab-label">Encrypt</span>
           </button>
           <button className={`tab-btn ${activeTab === 'decrypt'  ? 'active' : ''}`} onClick={() => setActiveTab('decrypt')}>
-            <Unlock size={15} /> Decrypt
+            <Unlock size={15} /><span className="tab-label">Decrypt</span>
           </button>
         </nav>
 
@@ -151,9 +171,11 @@ function App() {
               prekeyCount={vm.getPrekeyCount()}
               onAddContact={vm.addContact}
               onSetupNostr={handleSetupNostr}
+              onEnsureSession={handleEnsureSession}
               onPublishProfile={handlePublishProfile}
               onRotateSession={handleRotateSession}
               onGeneratePrekeys={handleGeneratePrekeys}
+              onGoToVault={() => setActiveTab('vault')}
               activeIdentityName={activeIdentity?.name ?? null}
             />
           )}
@@ -167,10 +189,14 @@ function App() {
       </div>
 
       <footer style={{ marginTop: '3rem', padding: '1rem', textAlign: 'center' }}>
-        <div className="alert alert-info" style={{ display: 'inline-flex', marginBottom: '1rem', width: 'auto' }}>
-          <Info size={15} style={{ flexShrink: 0 }} />
-          <span>Everything is stored locally and encrypted with your Master Password.</span>
-        </div>
+        {showFooterTip && (
+          <div className="alert alert-info" style={{ display: 'inline-flex', marginBottom: '1rem', width: 'auto', gap: '10px' }}>
+            <Info size={15} style={{ flexShrink: 0 }} />
+            <span>Everything is stored locally and encrypted with your Master Password.</span>
+            <button onClick={() => { localStorage.setItem('khazna_tip_seen','1'); setShowFooterTip(false); }}
+              style={{ background:'none', border:'none', cursor:'pointer', color:'inherit', padding:0, marginLeft:4, fontSize:'1rem' }}>×</button>
+          </div>
+        )}
         <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
           &copy; {new Date().getFullYear()} Khazna &mdash; ML-KEM-768 + X25519 &middot; AES-256-GCM &middot; PBKDF2-SHA-256
         </p>
@@ -179,7 +205,7 @@ function App() {
       {showHelp && (
         <div className="modal-overlay" onClick={() => setShowHelp(false)}>
           <div className="modal" onClick={e => e.stopPropagation()}>
-            <button className="modal-close" onClick={() => setShowHelp(false)} aria-label="Close help">
+            <button className="modal-close" onClick={() => setShowHelp(false)} aria-label="Close">
               <X size={15} />
             </button>
             <GuideTab />

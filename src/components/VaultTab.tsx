@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { type PQCKeyPair, VAULT_KEY } from '../utils/crypto';
+import { type PQCKeyPair, type VaultIdentity, VAULT_KEY } from '../utils/crypto';
 import {
-  Lock, Unlock, Shield, User, Users, Plus, Trash2, Eye, EyeOff,
+  Lock, Unlock, Shield, User, Users, Plus, Trash2, Eye,
   FolderPlus, QrCode, Copy, Download, PlusCircle, Check, RefreshCw,
-  Upload, FileJson, Sparkles,
+  Upload, FileJson, Sparkles, X,
 } from 'lucide-react';
 import { useVault } from '../hooks/useVault';
 import { QRCodeSVG } from 'qrcode.react';
@@ -23,11 +23,11 @@ export const VaultTab: React.FC<VaultTabProps> = ({
   const [activeSubTab, setActiveSubTab] = useState<'identities' | 'contacts' | 'settings'>('identities');
   const [newName, setNewName] = useState('');
   const [newKey, setNewKey] = useState('');
-  const [showKeysMap, setShowKeysMap] = useState<Record<string, boolean>>({});
-  const [showQRMap, setShowQRMap] = useState<Record<string, boolean>>({});
-  const [isCreating, setIsCreating] = useState(false);
+  const [isCreating,     setIsCreating]     = useState(false);
   const [newlyCreatedId, setNewlyCreatedId] = useState<string | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedId,       setCopiedId]       = useState<string | null>(null);
+  const [keyModal,       setKeyModal]       = useState<VaultIdentity | null>(null);
+  const [qrModal,        setQrModal]        = useState<VaultIdentity | null>(null);
 
   const { vault, isLocked, isNew, error, unlock, initialize, addIdentity, addContact, removeItem, reset } = manager;
 
@@ -36,7 +36,7 @@ export const VaultTab: React.FC<VaultTabProps> = ({
     const created = addIdentity(newName.trim());
     if (created) {
       setNewlyCreatedId(created.id);
-      setShowKeysMap(p => ({ ...p, [created.id]: true }));
+      setKeyModal(created); // open key modal so user can immediately copy their address
     }
     setNewName('');
     setIsCreating(false);
@@ -157,6 +157,7 @@ export const VaultTab: React.FC<VaultTabProps> = ({
 
   // ── Unlocked vault ───────────────────────────────────────────────────────
   return (
+    <>
     <div className="space-y-8">
       <div className="tabs">
         <button
@@ -286,11 +287,11 @@ export const VaultTab: React.FC<VaultTabProps> = ({
                     <button className="copy-btn" onClick={() => onIdentitySelect(id)} disabled={isActive}>
                       {isActive ? 'Active' : 'Select'}
                     </button>
-                    <button className="copy-btn" onClick={() => setShowQRMap(p => ({ ...p, [id.id]: !p[id.id] }))}>
+                    <button className="copy-btn" title="Show QR code" onClick={() => setQrModal(id)}>
                       <QrCode size={14} />
                     </button>
-                    <button className="copy-btn" onClick={() => setShowKeysMap(p => ({ ...p, [id.id]: !p[id.id] }))}>
-                      {showKeysMap[id.id] ? <EyeOff size={14} /> : <Eye size={14} />}
+                    <button className="copy-btn" title="Show keys" onClick={() => setKeyModal(id)}>
+                      <Eye size={14} />
                     </button>
                     <button
                       className="copy-btn"
@@ -305,47 +306,6 @@ export const VaultTab: React.FC<VaultTabProps> = ({
                     </button>
                   </div>
                 </div>
-
-                {showQRMap[id.id] && (
-                  <div className="qr-container">
-                    <QRCodeSVG value={id.keys.publicKey} size={180} />
-                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
-                      Scan to share your Public Address
-                    </p>
-                  </div>
-                )}
-
-                {showKeysMap[id.id] && (
-                  <div className="space-y-4" style={{ marginTop: '1rem' }}>
-                    <div>
-                      <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Public Address</label>
-                      <div className="key-display" style={{ fontSize: '0.65rem' }}>{id.keys.publicKey}</div>
-                      <button
-                        className="copy-btn"
-                        style={{ marginTop: '0.5rem' }}
-                        onClick={() => copyAddress(id.id, id.keys.publicKey)}
-                      >
-                        {copiedId === id.id ? <Check size={12} /> : <Copy size={12} />}
-                        {copiedId === id.id ? 'Copied!' : 'Copy Address'}
-                      </button>
-                    </div>
-                    <div>
-                      <label style={{ fontSize: '0.7rem', color: 'var(--error)' }}>
-                        Private Key — keep this secret
-                      </label>
-                      <div className="key-display" style={{ fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)' }}>
-                        {id.keys.privateKey}
-                      </div>
-                      <button
-                        className="copy-btn"
-                        style={{ marginTop: '0.5rem' }}
-                        onClick={() => downloadKey(id.keys.privateKey, `${id.name}-private-key.txt`)}
-                      >
-                        <Download size={12} /> Download Private Key
-                      </button>
-                    </div>
-                  </div>
-                )}
               </div>
             );
           })}
@@ -450,5 +410,58 @@ export const VaultTab: React.FC<VaultTabProps> = ({
         </div>
       )}
     </div>
+
+    {/* ── Key modal ── */}
+    {keyModal && (
+      <div className="modal-overlay" onClick={() => setKeyModal(null)}>
+        <div className="modal" onClick={e => e.stopPropagation()}>
+          <button className="modal-close" onClick={() => setKeyModal(null)} aria-label="Close"><X size={15} /></button>
+          <h3 style={{ margin: '0 0 1.5rem', fontSize: '1rem' }}>{keyModal.name} — Keys</h3>
+
+          <div style={{ marginBottom: '1.25rem' }}>
+            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.5rem' }}>
+              Public Address — share freely
+            </label>
+            <div className="key-display" style={{ fontSize: '0.65rem', marginBottom: '0.5rem' }}>{keyModal.keys.publicKey}</div>
+            <button className="copy-btn" onClick={() => copyAddress(keyModal.id, keyModal.keys.publicKey)}>
+              {copiedId === keyModal.id ? <Check size={12} /> : <Copy size={12} />}
+              {copiedId === keyModal.id ? 'Copied!' : 'Copy Address'}
+            </button>
+          </div>
+
+          <div>
+            <label style={{ fontSize: '0.7rem', color: 'var(--error)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', display: 'block', marginBottom: '0.5rem' }}>
+              Private Key — keep this secret
+            </label>
+            <div className="key-display" style={{ fontSize: '0.65rem', background: 'rgba(239,68,68,0.05)', marginBottom: '0.5rem' }}>{keyModal.keys.privateKey}</div>
+            <button className="copy-btn" onClick={() => downloadKey(keyModal.keys.privateKey, `${keyModal.name}-private-key.txt`)}>
+              <Download size={12} /> Download Private Key
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* ── QR modal ── */}
+    {qrModal && (
+      <div className="modal-overlay" onClick={() => setQrModal(null)}>
+        <div className="modal" style={{ maxWidth: '320px', textAlign: 'center' }} onClick={e => e.stopPropagation()}>
+          <button className="modal-close" onClick={() => setQrModal(null)} aria-label="Close"><X size={15} /></button>
+          <h3 style={{ margin: '0 0 0.25rem', fontSize: '1rem' }}>{qrModal.name}</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '1.5rem' }}>
+            Public Address — let others scan to encrypt to you
+          </p>
+          <div style={{ background: 'white', padding: '16px', borderRadius: '12px', display: 'inline-block', marginBottom: '1.25rem' }}>
+            <QRCodeSVG value={qrModal.keys.publicKey} size={220} />
+          </div>
+          <br />
+          <button className="copy-btn" style={{ margin: '0 auto' }} onClick={() => copyAddress(qrModal.id, qrModal.keys.publicKey)}>
+            {copiedId === qrModal.id ? <Check size={12} /> : <Copy size={12} />}
+            {copiedId === qrModal.id ? 'Copied!' : 'Copy Address'}
+          </button>
+        </div>
+      </div>
+    )}
+  </>
   );
 };
