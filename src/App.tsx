@@ -72,8 +72,8 @@ function App() {
 
   // ── Nostr / session / prekey handlers ──────────────────────────────────────
 
-  // Returns the new key so MessagesTab can publish profile+prekeys in one shot.
-  const handleSetupNostr = async () => vm.initNostr();
+  // Atomic first-time setup: nostr key + session key + prekeys in one vault write.
+  const handleInitMessaging = async () => vm.initMessaging();
 
   const handleEnsureSession = async (): Promise<string | null> => {
     const keys = await vm.ensureSessionKey();
@@ -170,7 +170,7 @@ function App() {
               sessionKey={vm.vault?.sessionKey}
               prekeyCount={vm.getPrekeyCount()}
               onAddContact={vm.addContact}
-              onSetupNostr={handleSetupNostr}
+              onInitMessaging={handleInitMessaging}
               onEnsureSession={handleEnsureSession}
               onPublishProfile={handlePublishProfile}
               onRotateSession={handleRotateSession}

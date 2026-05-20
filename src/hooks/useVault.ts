@@ -128,6 +128,21 @@ export function useVault() {
     return nostrKey;
   }, [vault, save]);
 
+  // Atomic first-time setup: nostr key + session key + prekeys in one vault write.
+  // Using separate sequential saves would cause stale-closure overwrites since React
+  // batches state updates and each hook callback captures the vault at render time.
+  const initMessaging = useCallback(async (count = PREKEY_BATCH) => {
+    if (!vault || vault.nostrPrivateKey) return null;
+    const nostrKey    = generateNostrKey();
+    const session     = generateSessionKey();
+    const prekeys: StoredPrekey[] = Array.from({ length: count }, () => ({
+      id:   crypto.randomUUID(),
+      keys: generateKeyPair(),
+    }));
+    await save({ ...vault, nostrPrivateKey: nostrKey.privateKey, sessionKey: session, prekeys });
+    return { nostrKey, sessionKey: session.keys, prekeys };
+  }, [vault, save]);
+
   // ── Session key (time-window forward secrecy) ─────────────────────────────────
 
   const ensureSessionKey = useCallback(async (): Promise<PQCKeyPair | null> => {
@@ -184,6 +199,7 @@ export function useVault() {
     removeItem,
     updateContactSession,
     initNostr,
+    initMessaging,
     ensureSessionKey,
     rotateSessionKey,
     generatePrekeys,

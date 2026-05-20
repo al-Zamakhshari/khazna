@@ -32,7 +32,7 @@ interface MessagesTabProps {
   sessionKey:         SessionKey | undefined;
   prekeyCount:        number;
   onAddContact:       (name: string, khaznaKey: string, nostrPub: string) => void;
-  onSetupNostr:       () => Promise<{ privateKey: string; publicKey: string } | null>;
+  onInitMessaging:    () => Promise<{ nostrKey: { privateKey: string; publicKey: string }; sessionKey: { publicKey: string }; prekeys: { id: string; keys: { publicKey: string } }[] } | null>;
   onEnsureSession:    () => Promise<string | null>;
   onPublishProfile:   (displayName: string, sessionPub?: string) => void;
   onRotateSession:    () => Promise<void>;
@@ -45,7 +45,7 @@ interface MessagesTabProps {
 
 export const MessagesTab: React.FC<MessagesTabProps> = ({
   nostrPrivKeyHex, keyOps, contacts, sessionKey, prekeyCount,
-  onAddContact, onSetupNostr, onEnsureSession, onPublishProfile,
+  onAddContact, onInitMessaging, onEnsureSession, onPublishProfile,
   onRotateSession, onGeneratePrekeys, onGoToVault, activeIdentityName,
 }) => {
   const [selectedContact, setSelectedContact]  = useState<VaultContact | null>(null);
@@ -112,10 +112,12 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
   const handleFullSetup = useCallback(async () => {
     setSettingUp(true);
     try {
-      const nostrKey = await onSetupNostr();
-      if (!nostrKey) return;
+      // Single atomic vault write — avoids stale-closure overwrites from sequential saves
+      const result = await onInitMessaging();
+      if (!result) return;
 
-      const prekeys = await onGeneratePrekeys();
+      const { nostrKey, sessionKey: sessionKeys, prekeys } = result;
+
       if (prekeys.length > 0) {
         await publishEvent(buildPrekeyEvent(
           prekeys.map(p => ({ id: p.id, publicKey: p.keys.publicKey })),
@@ -124,10 +126,11 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
       }
 
       if (activeIdentityName && keyOps.longTermKeys) {
-        const sessionPub = await onEnsureSession();
         await publishEvent(buildProfileEvent(
-          activeIdentityName, keyOps.longTermKeys.publicKey,
-          nostrKey.privateKey, sessionPub ?? undefined,
+          activeIdentityName,
+          keyOps.longTermKeys.publicKey,
+          nostrKey.privateKey,
+          sessionKeys.publicKey,
         ));
       }
     } catch (e) {
@@ -135,7 +138,7 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
     } finally {
       setSettingUp(false);
     }
-  }, [onSetupNostr, onGeneratePrekeys, onEnsureSession, activeIdentityName, keyOps.longTermKeys]);
+  }, [onInitMessaging, activeIdentityName, keyOps.longTermKeys]);
 
   const handleGeneratePrekeys = async () => {
     const prekeys = await onGeneratePrekeys();
