@@ -62,20 +62,29 @@ export interface VaultIdentity {
 export interface VaultContact {
   id: string;
   name: string;
-  publicKey: string;
+  publicKey: string;       // long-term key — never changes
   nostrPubkey?: string;
+  sessionPublicKey?: string;    // cached from their Nostr profile
+  sessionFetchedAt?: number;    // unix ms — for cache staleness check
 }
 
 export interface SessionKey {
-  keys:    PQCKeyPair;
-  expiry:  number;   // unix timestamp ms
+  keys:   PQCKeyPair;
+  expiry: number; // unix ms
+}
+
+// One-time prekey: public half published to Nostr, private half kept in vault until consumed.
+export interface StoredPrekey {
+  id:   string;     // UUID referenced in KhaznaPayload.prekeyId
+  keys: PQCKeyPair;
 }
 
 export interface KhaznaVault {
-  identities:     VaultIdentity[];
-  contacts:       VaultContact[];
-  nostrPrivateKey?: string;   // hex — secp256k1 key for Nostr identity & routing
-  sessionKey?:    SessionKey; // rotating PQC key for forward secrecy
+  identities:      VaultIdentity[];
+  contacts:        VaultContact[];
+  nostrPrivateKey?: string;      // hex secp256k1 — identity + routing
+  sessionKey?:     SessionKey;   // rotating PQC key — time-window forward secrecy
+  prekeys?:        StoredPrekey[]; // one-time prekeys — per-message forward secrecy
 }
 
 // ── Hybrid KEM core ───────────────────────────────────────────────────────────

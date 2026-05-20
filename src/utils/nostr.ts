@@ -73,25 +73,29 @@ export interface KhaznaPayload {
   bundle: string;        // Khazna-PQC-encrypted content (base64)
   sig: string;           // schnorr(sha256(bundle), sender_nostr_key)
   fileName?: string;     // only for type === 'file'
+  prekeyId?: string;     // if set: encrypted to recipient's one-time prekey
+  sessionKey?: true;     // marker: encrypted to recipient's session key (not long-term)
 }
 
 export function buildTextPayload(
   plaintext: string,
-  recipientKhaznaKey: string,
+  recipientKey: string,
   senderNostrPrivKey: string,
+  prekeyId?: string,
 ): KhaznaPayload {
-  const bundle = encryptMessage(plaintext, recipientKhaznaKey);
-  return { v: 1, type: 'text', bundle, sig: signBundle(bundle, senderNostrPrivKey) };
+  const bundle = encryptMessage(plaintext, recipientKey);
+  return { v: 1, type: 'text', bundle, sig: signBundle(bundle, senderNostrPrivKey), prekeyId };
 }
 
 export function buildFilePayload(
   blossomUrl: string,
   fileName: string,
-  recipientKhaznaKey: string,
+  recipientKey: string,
   senderNostrPrivKey: string,
+  prekeyId?: string,
 ): KhaznaPayload {
-  const bundle = encryptMessage(JSON.stringify({ url: blossomUrl, fileName }), recipientKhaznaKey);
-  return { v: 1, type: 'file', bundle, sig: signBundle(bundle, senderNostrPrivKey), fileName };
+  const bundle = encryptMessage(JSON.stringify({ url: blossomUrl, fileName }), recipientKey);
+  return { v: 1, type: 'file', bundle, sig: signBundle(bundle, senderNostrPrivKey), fileName, prekeyId };
 }
 
 export function decryptPayload(
@@ -146,14 +150,17 @@ export function buildProfileEvent(
   displayName: string,
   khaznaPublicKey: string,
   nostrPrivKeyHex: string,
+  sessionPublicKey?: string,
 ): NostrEvent {
-  const privKey     = hexToBytes(nostrPrivKeyHex);
-  const existing    = {}; // could merge with fetched profile in the future
-  const content     = JSON.stringify({
-    ...existing,
-    name:               displayName,
-    khazna_pub:         khaznaPublicKey,
-    khazna_pub_version: 1,
+  const privKey = hexToBytes(nostrPrivKeyHex);
+  const content = JSON.stringify({
+    name:                   displayName,
+    khazna_pub:             khaznaPublicKey,
+    khazna_pub_version:     1,
+    ...(sessionPublicKey && {
+      khazna_session_pub:    sessionPublicKey,
+      khazna_session_expiry: Math.floor((Date.now() + 30 * 24 * 60 * 60 * 1000) / 1000),
+    }),
   });
   return finalizeEvent({ kind: 0, content, tags: [], created_at: Math.floor(Date.now() / 1000) }, privKey);
 }
@@ -165,6 +172,79 @@ export function extractKhaznaKey(profileEvent: NostrEvent): string | null {
   } catch {
     return null;
   }
+}
+
+export function extractSessionKey(profileEvent: NostrEvent): string | null {
+  try {
+    const meta    = JSON.parse(profileEvent.content);
+    const key     = meta.khazna_session_pub;
+    const expiry  = meta.khazna_session_expiry;
+    if (typeof key !== 'string') return null;
+    // Reject expired session keys
+    if (expiry && expiry * 1000 < Date.now()) return null;
+    return key;
+  } catch {
+    return null;
+  }
+}
+
+// ── One-time prekeys (kind 10050, replaceable) ────────────────────────────────
+
+export const PREKEY_KIND      = 10050;
+export const PREKEY_BATCH     = 50;
+export const SESSION_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours
+
+export interface SignedPrekey {
+  id:  string;   // UUID
+  pub: string;   // base64 ML-KEM+X25519 public key
+  sig: string;   // schnorr(sha256(id+pub), nostr_priv_key) — proves ownership
+}
+
+export function buildPrekeyEvent(
+  prekeys: { id: string; publicKey: string }[],
+  nostrPrivKeyHex: string,
+): NostrEvent {
+  const signed: SignedPrekey[] = prekeys.map(pk => ({
+    id:  pk.id,
+    pub: pk.publicKey,
+    sig: signBundle(pk.id + pk.publicKey, nostrPrivKeyHex),
+  }));
+  return finalizeEvent(
+    {
+      kind:       PREKEY_KIND,
+      content:    JSON.stringify(signed),
+      tags:       [],
+      created_at: Math.floor(Date.now() / 1000),
+    },
+    hexToBytes(nostrPrivKeyHex),
+  );
+}
+
+export async function fetchPrekeys(
+  nostrPubHex: string,
+  relays: string[] = DEFAULT_RELAYS,
+): Promise<SignedPrekey[]> {
+  const pool   = new SimplePool();
+  const events = await pool.querySync(relays, { kinds: [PREKEY_KIND], authors: [nostrPubHex] });
+  pool.close(relays);
+  if (!events.length) return [];
+  try {
+    return JSON.parse(events.sort((a, b) => b.created_at - a.created_at)[0].content);
+  } catch {
+    return [];
+  }
+}
+
+// Picks a random prekey whose sig verifies against the owner's Nostr pubkey.
+export function pickValidPrekey(
+  prekeys: SignedPrekey[],
+  ownerNostrPubHex: string,
+): SignedPrekey | null {
+  const valid = prekeys.filter(pk =>
+    verifyBundle(pk.id + pk.pub, pk.sig, ownerNostrPubHex)
+  );
+  if (!valid.length) return null;
+  return valid[Math.floor(Math.random() * valid.length)];
 }
 
 export function extractDisplayName(profileEvent: NostrEvent): string {

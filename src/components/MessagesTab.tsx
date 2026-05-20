@@ -1,58 +1,58 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Send, Paperclip, Wifi, WifiOff, User, Copy, Check,
-  RefreshCw, Shield, FileIcon, Download, Loader,
+  RefreshCw, Shield, FileIcon, Download, Loader, Key, RotateCcw,
 } from 'lucide-react';
-import { useNostr } from '../hooks/useNostr';
+import { useNostr, type NostrKeyOps } from '../hooks/useNostr';
 import { downloadFromBlossom } from '../utils/blossom';
 import { isValidNpub, nostrPubToNpub } from '../utils/nostr';
-import { type PQCKeyPair } from '../utils/crypto';
-
-interface Contact {
-  id:           string;
-  name:         string;
-  publicKey:    string;
-  nostrPubkey?: string;
-}
+import { type VaultContact, type SessionKey } from '../utils/crypto';
 
 interface MessagesTabProps {
-  nostrPrivKeyHex:  string | undefined;
-  activeKhaznaKeys: PQCKeyPair | null;
-  contacts:         Contact[];
-  onAddContact:     (name: string, khaznaKey: string, nostrPub: string) => void;
-  onSetupNostr:     () => void;
-  onPublishProfile: (displayName: string) => void;
+  nostrPrivKeyHex:    string | undefined;
+  keyOps:             NostrKeyOps;
+  contacts:           VaultContact[];
+  sessionKey:         SessionKey | undefined;
+  prekeyCount:        number;
+  onAddContact:       (name: string, khaznaKey: string, nostrPub: string) => void;
+  onSetupNostr:       () => void;
+  onPublishProfile:   (displayName: string, sessionPub?: string) => void;
+  onRotateSession:    () => Promise<void>;
+  onGeneratePrekeys:  () => Promise<{ id: string; keys: { publicKey: string } }[]>;
   activeIdentityName: string | null;
-  activeIdentityKey:  PQCKeyPair | null;
 }
 
 export const MessagesTab: React.FC<MessagesTabProps> = ({
   nostrPrivKeyHex,
-  activeKhaznaKeys,
+  keyOps,
   contacts,
+  sessionKey,
+  prekeyCount,
   onAddContact,
   onSetupNostr,
   onPublishProfile,
+  onRotateSession,
+  onGeneratePrekeys,
   activeIdentityName,
-  activeIdentityKey,
 }) => {
-  const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
-  const [draft,           setDraft]           = useState('');
-  const [lookupNpub,      setLookupNpub]      = useState('');
-  const [lookupStatus,    setLookupStatus]    = useState<'idle' | 'loading' | 'error'>('idle');
-  const [lookupError,     setLookupError]     = useState('');
-  const [copied,          setCopied]          = useState(false);
-  const [sending,         setSending]         = useState(false);
-  const [publishStatus,   setPublishStatus]   = useState<'idle' | 'loading' | 'done'>('idle');
-  const fileInputRef  = useRef<HTMLInputElement>(null);
-  const bottomRef     = useRef<HTMLDivElement>(null);
+  const [selectedContact, setSelectedContact]  = useState<VaultContact | null>(null);
+  const [draft,           setDraft]            = useState('');
+  const [lookupNpub,      setLookupNpub]       = useState('');
+  const [lookupStatus,    setLookupStatus]     = useState<'idle' | 'loading' | 'error'>('idle');
+  const [lookupError,     setLookupError]      = useState('');
+  const [copied,          setCopied]           = useState(false);
+  const [sending,         setSending]          = useState(false);
+  const [publishStatus,   setPublishStatus]    = useState<'idle' | 'loading' | 'done'>('idle');
+  const [rotatingSession, setRotatingSession]  = useState(false);
+  const [generatingKeys,  setGeneratingKeys]   = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const bottomRef    = useRef<HTMLDivElement>(null);
 
-  const { myNpub, messages, status, sendText, sendFile, lookupContact } = useNostr(
+  const { myNpub, messages, status, sendText, sendFile, lookupContact, publishPrekeys } = useNostr(
     nostrPrivKeyHex,
-    activeKhaznaKeys,
+    keyOps,
   );
 
-  // Scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, selectedContact]);
@@ -64,7 +64,36 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
       )
     : [];
 
-  // ── Nostr not set up ─────────────────────────────────────────────────────────
+  // ── Security helpers ──────────────────────────────────────────────────────────
+
+  const sessionDaysLeft = sessionKey
+    ? Math.max(0, Math.ceil((sessionKey.expiry - Date.now()) / (24 * 60 * 60 * 1000)))
+    : null;
+
+  const handleRotateSession = async () => {
+    setRotatingSession(true);
+    try {
+      await onRotateSession();
+      if (activeIdentityName && keyOps.longTermKeys) {
+        const newSession = keyOps.sessionKeys?.publicKey;
+        await onPublishProfile(activeIdentityName, newSession);
+      }
+    } finally {
+      setRotatingSession(false);
+    }
+  };
+
+  const handleGeneratePrekeys = async () => {
+    setGeneratingKeys(true);
+    try {
+      const fresh = await onGeneratePrekeys();
+      await publishPrekeys(fresh.map(p => ({ id: p.id, publicKey: p.keys.publicKey })));
+    } finally {
+      setGeneratingKeys(false);
+    }
+  };
+
+  // ── Nostr setup ───────────────────────────────────────────────────────────────
 
   if (!nostrPrivKeyHex) {
     return (
@@ -75,21 +104,21 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
             <div className="step-num">1</div>
             <div>
               <strong>Generate a Nostr identity</strong>
-              <p>Creates a secp256k1 keypair stored in your encrypted vault. Used for routing and sender authentication — not for encryption.</p>
+              <p>Creates a secp256k1 keypair stored in your encrypted vault — used for routing and sender authentication, not for encryption.</p>
             </div>
           </div>
           <div className="onboarding-step">
             <div className="step-num">2</div>
             <div>
               <strong>Publish your profile</strong>
-              <p>Uploads your Khazna Public Address to a public Nostr relay so contacts can look you up by your npub.</p>
+              <p>Uploads your Khazna Public Address to a Nostr relay. Contacts look you up by npub — no more 1600-character key copy-paste.</p>
             </div>
           </div>
           <div className="onboarding-step">
             <div className="step-num">3</div>
             <div>
-              <strong>Add contacts by npub</strong>
-              <p>Paste a contact's npub — Khazna fetches their Khazna key automatically. No more 1600-character copy-paste.</p>
+              <strong>Add contacts &amp; message</strong>
+              <p>Paste a contact's npub. Khazna fetches their key automatically and sends messages encrypted to their strongest available key.</p>
             </div>
           </div>
         </div>
@@ -100,27 +129,15 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
     );
   }
 
-  // ── Profile not published yet ─────────────────────────────────────────────────
-
-  const handlePublishProfile = async () => {
-    if (!activeIdentityName || !activeIdentityKey) return;
-    setPublishStatus('loading');
-    try {
-      await onPublishProfile(activeIdentityName);
-      setPublishStatus('done');
-    } catch {
-      setPublishStatus('idle');
-    }
-  };
-
-  // ── Lookup contact by npub ────────────────────────────────────────────────────
+  // ── Contact lookup ────────────────────────────────────────────────────────────
 
   const handleLookup = async () => {
-    if (!isValidNpub(lookupNpub.trim())) {
+    const npub = lookupNpub.trim();
+    if (!isValidNpub(npub)) {
       setLookupError('Not a valid npub.'); setLookupStatus('error'); return;
     }
     setLookupStatus('loading'); setLookupError('');
-    const result = await lookupContact(lookupNpub.trim());
+    const result = await lookupContact(npub);
     if (!result) {
       setLookupError('Profile not found or has no Khazna key published.');
       setLookupStatus('error'); return;
@@ -129,44 +146,35 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
     setLookupNpub(''); setLookupStatus('idle');
   };
 
+  const handlePublishProfile = async () => {
+    if (!activeIdentityName || !keyOps.longTermKeys) return;
+    setPublishStatus('loading');
+    try {
+      await onPublishProfile(activeIdentityName, keyOps.sessionKeys?.publicKey);
+      setPublishStatus('done');
+    } catch {
+      setPublishStatus('idle');
+    }
+  };
+
   // ── Send handlers ─────────────────────────────────────────────────────────────
 
   const handleSendText = async () => {
-    if (!draft.trim() || !selectedContact?.nostrPubkey || !activeKhaznaKeys) return;
+    if (!draft.trim() || !selectedContact) return;
     setSending(true);
     try {
-      await sendText(draft.trim(), selectedContact.publicKey, selectedContact.nostrPubkey);
+      await sendText(draft.trim(), selectedContact);
       setDraft('');
-    } catch (e: unknown) {
-      console.error('Send failed', e);
-    } finally {
-      setSending(false);
-    }
+    } catch (e) { console.error(e); }
+    finally { setSending(false); }
   };
 
   const handleSendFile = async (file: File) => {
-    if (!selectedContact?.nostrPubkey || !activeKhaznaKeys) return;
+    if (!selectedContact) return;
     setSending(true);
-    try {
-      await sendFile(file, selectedContact.publicKey, selectedContact.nostrPubkey);
-    } catch (e: unknown) {
-      console.error('File send failed', e);
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleDownload = async (url: string, fileName: string) => {
-    try {
-      const data  = await downloadFromBlossom(url);
-      const blob  = new Blob([data as BlobPart]);
-      const a     = document.createElement('a');
-      a.href      = URL.createObjectURL(blob);
-      a.download  = fileName;
-      a.click();
-    } catch {
-      alert('Download failed.');
-    }
+    try { await sendFile(file, selectedContact); }
+    catch (e) { console.error(e); }
+    finally { setSending(false); }
   };
 
   const copyNpub = () => {
@@ -176,207 +184,236 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  // ── Render ────────────────────────────────────────────────────────────────────
-
   const nostrContacts = contacts.filter(c => c.nostrPubkey);
 
+  // ── Render ────────────────────────────────────────────────────────────────────
+
   return (
-    <div style={{ display: 'flex', gap: '1.5rem', minHeight: '500px' }}>
+    <div className="space-y-6">
 
-      {/* Sidebar */}
-      <div style={{ width: '220px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+      {/* Security status bar */}
+      <div style={{
+        display: 'flex', gap: '0.75rem', flexWrap: 'wrap',
+        padding: '0.75rem 1rem', background: 'var(--bg)',
+        border: '1px solid var(--border)', borderRadius: '10px',
+        fontSize: '0.75rem',
+      }}>
+        {/* npub */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flex: 1, minWidth: '200px' }}>
+          <User size={12} color="var(--text-muted)" />
+          <span style={{ fontFamily: 'monospace', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {myNpub?.slice(0, 28)}…
+          </span>
+          <button className="copy-btn" style={{ padding: '1px 6px', fontSize: '0.65rem', flexShrink: 0 }} onClick={copyNpub}>
+            {copied ? <Check size={9} /> : <Copy size={9} />}
+          </button>
+          <span style={{ color: status === 'connected' ? 'var(--success)' : 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '3px', flexShrink: 0 }}>
+            {status === 'connected' ? <Wifi size={10} /> : status === 'connecting' ? <Loader size={10} /> : <WifiOff size={10} />}
+            {status}
+          </span>
+        </div>
 
-        {/* My npub */}
-        <div style={{ padding: '0.75rem', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: '8px', fontSize: '0.75rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-            <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>My npub</span>
-            <button className="copy-btn" style={{ padding: '2px 6px', fontSize: '0.65rem' }} onClick={copyNpub}>
-              {copied ? <Check size={10} /> : <Copy size={10} />}
-              {copied ? 'Copied' : 'Copy'}
-            </button>
-          </div>
-          <div style={{ fontFamily: 'monospace', wordBreak: 'break-all', color: 'var(--text-muted)', fontSize: '0.65rem' }}>
-            {myNpub?.slice(0, 24)}…
-          </div>
-          <div style={{ marginTop: '0.5rem', display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.65rem' }}>
-            {status === 'connected'
-              ? <><Wifi size={10} color="var(--success)" /> <span style={{ color: 'var(--success)' }}>Connected</span></>
-              : status === 'connecting'
-              ? <><Loader size={10} style={{ animation: 'spin 1s linear infinite' }} /> Connecting…</>
-              : <><WifiOff size={10} color="var(--text-muted)" /> <span style={{ color: 'var(--text-muted)' }}>Offline</span></>
+        {/* Session key */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+          <Key size={12} color={sessionDaysLeft !== null && sessionDaysLeft < 7 ? 'var(--error)' : 'var(--text-muted)'} />
+          <span style={{ color: 'var(--text-muted)' }}>
+            Session key:&nbsp;
+            {sessionDaysLeft === null
+              ? <span style={{ color: 'var(--error)' }}>not set</span>
+              : <span style={{ color: sessionDaysLeft < 7 ? 'var(--error)' : 'var(--success)' }}>
+                  {sessionDaysLeft}d left
+                </span>
             }
-          </div>
+          </span>
+          <button
+            className="copy-btn"
+            style={{ padding: '1px 6px', fontSize: '0.65rem' }}
+            onClick={handleRotateSession}
+            disabled={rotatingSession}
+            title="Rotate session key — old messages encrypted to the previous key become unreadable"
+          >
+            {rotatingSession ? <Loader size={9} /> : <RotateCcw size={9} />} Rotate
+          </button>
+        </div>
+
+        {/* Prekeys */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+          <Shield size={12} color={prekeyCount < 10 ? 'var(--error)' : 'var(--text-muted)'} />
+          <span style={{ color: 'var(--text-muted)' }}>
+            Prekeys:&nbsp;
+            <span style={{ color: prekeyCount < 10 ? 'var(--error)' : prekeyCount > 20 ? 'var(--success)' : 'var(--text-muted)' }}>
+              {prekeyCount} remaining
+            </span>
+          </span>
+          {prekeyCount < 20 && (
+            <button
+              className="copy-btn"
+              style={{ padding: '1px 6px', fontSize: '0.65rem' }}
+              onClick={handleGeneratePrekeys}
+              disabled={generatingKeys}
+            >
+              {generatingKeys ? <Loader size={9} /> : <RefreshCw size={9} />} Generate
+            </button>
+          )}
         </div>
 
         {/* Publish profile */}
-        {activeIdentityKey && (
+        {keyOps.longTermKeys && (
           <button
             className="copy-btn"
-            style={{ fontSize: '0.75rem', justifyContent: 'center' }}
+            style={{ padding: '1px 6px', fontSize: '0.65rem', flexShrink: 0 }}
             onClick={handlePublishProfile}
-            disabled={publishStatus === 'loading' || publishStatus === 'done'}
+            disabled={publishStatus !== 'idle'}
           >
-            {publishStatus === 'loading' ? <Loader size={12} /> : publishStatus === 'done' ? <Check size={12} /> : <RefreshCw size={12} />}
+            {publishStatus === 'done' ? <Check size={9} /> : publishStatus === 'loading' ? <Loader size={9} /> : <RefreshCw size={9} />}
             {publishStatus === 'done' ? 'Published' : 'Publish Profile'}
           </button>
         )}
+      </div>
 
-        {/* Contact list */}
-        <div style={{ flex: 1, overflowY: 'auto' }}>
+      {/* Main layout */}
+      <div style={{ display: 'flex', gap: '1.5rem', minHeight: '440px' }}>
+
+        {/* Sidebar */}
+        <div style={{ width: '200px', flexShrink: 0, display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           {nostrContacts.length === 0 ? (
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center', marginTop: '1rem' }}>
-              No Nostr contacts yet. Look up someone by npub below.
+              No Nostr contacts yet.
             </p>
           ) : nostrContacts.map(c => (
             <button
               key={c.id}
               onClick={() => setSelectedContact(c)}
               style={{
-                width: '100%', textAlign: 'left', background: selectedContact?.id === c.id ? 'rgba(37,99,235,0.08)' : 'none',
-                border: 'none', borderRadius: '8px', padding: '0.5rem 0.75rem', cursor: 'pointer',
-                display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8rem',
+                width: '100%', textAlign: 'left',
+                background: selectedContact?.id === c.id ? 'rgba(37,99,235,0.08)' : 'none',
+                border: 'none', borderRadius: '8px', padding: '0.5rem 0.75rem',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px',
+                fontSize: '0.8rem',
                 color: selectedContact?.id === c.id ? 'var(--primary)' : 'var(--text)',
               }}
             >
               <User size={14} /> {c.name}
             </button>
           ))}
-        </div>
 
-        {/* Lookup by npub */}
-        <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-          <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.35rem', display: 'block' }}>
-            Add by npub
-          </label>
-          <input
-            placeholder="npub1…"
-            value={lookupNpub}
-            onChange={e => { setLookupNpub(e.target.value); setLookupStatus('idle'); }}
-            style={{ fontSize: '0.75rem', padding: '0.4rem 0.6rem', marginBottom: '0.35rem' }}
-            onKeyDown={e => e.key === 'Enter' && handleLookup()}
-          />
-          {lookupStatus === 'error' && (
-            <p style={{ fontSize: '0.7rem', color: 'var(--error)', margin: '0 0 0.35rem' }}>{lookupError}</p>
-          )}
-          <button
-            className="btn"
-            style={{ padding: '0.4rem', fontSize: '0.75rem' }}
-            onClick={handleLookup}
-            disabled={lookupStatus === 'loading' || !lookupNpub}
-          >
-            {lookupStatus === 'loading' ? <Loader size={12} /> : 'Look up'}
-          </button>
-        </div>
-      </div>
-
-      {/* Chat area */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '0' }}>
-        {!selectedContact ? (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
-            {nostrContacts.length === 0
-              ? 'Add a contact by npub to start messaging.'
-              : 'Select a contact to start a conversation.'}
-          </div>
-        ) : (
-          <>
-            {/* Thread header */}
-            <div style={{ padding: '0.75rem 0', borderBottom: '1px solid var(--border)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <User size={16} />
-              <strong style={{ fontSize: '0.9rem' }}>{selectedContact.name}</strong>
-              <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: '4px', fontFamily: 'monospace' }}>
-                {selectedContact.nostrPubkey ? nostrPubToNpub(selectedContact.nostrPubkey).slice(0, 20) + '…' : ''}
-              </span>
-            </div>
-
-            {/* Messages */}
-            <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.75rem', minHeight: '300px', maxHeight: '380px' }}>
-              {threadMessages.length === 0 ? (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '2rem' }}>
-                  No messages yet. Send the first one!
-                </div>
-              ) : threadMessages.map(msg => {
-                const isMine = msg.fromNostrPub !== selectedContact.nostrPubkey;
-                return (
-                  <div
-                    key={msg.id}
-                    style={{
-                      display: 'flex', flexDirection: 'column',
-                      alignItems: isMine ? 'flex-end' : 'flex-start',
-                    }}
-                  >
-                    <div style={{
-                      maxWidth: '75%', padding: '0.6rem 0.9rem',
-                      borderRadius: isMine ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
-                      background: isMine ? 'var(--primary)' : 'var(--bg)',
-                      color: isMine ? 'white' : 'var(--text)',
-                      border: isMine ? 'none' : '1px solid var(--border)',
-                      fontSize: '0.875rem', lineHeight: 1.5,
-                    }}>
-                      {msg.type === 'text' ? (
-                        <span style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</span>
-                      ) : (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <FileIcon size={16} />
-                          <span>{msg.fileName}</span>
-                          <button
-                            onClick={() => msg.fileUrl && handleDownload(msg.fileUrl, msg.fileName ?? 'file')}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0 }}
-                          >
-                            <Download size={14} />
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      {msg.verified && <Shield size={9} color="var(--success)" aria-label="Signature verified" />}
-                    </div>
-                  </div>
-                );
-              })}
-              <div ref={bottomRef} />
-            </div>
-
-            {/* Input */}
-            {!activeKhaznaKeys ? (
-              <div className="hint" style={{ marginTop: '1rem' }}>
-                Select an identity in the Vault tab to send messages.
-              </div>
-            ) : (
-              <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', alignItems: 'flex-end' }}>
-                <textarea
-                  value={draft}
-                  onChange={e => setDraft(e.target.value)}
-                  placeholder="Type a message…"
-                  onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendText(); }}}
-                  style={{ flex: 1, minHeight: '44px', maxHeight: '120px', resize: 'vertical', fontSize: '0.875rem' }}
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  style={{ display: 'none' }}
-                  onChange={e => { const f = e.target.files?.[0]; if (f) handleSendFile(f); e.target.value = ''; }}
-                />
-                <button
-                  className="copy-btn"
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Send file"
-                  style={{ padding: '0.6rem' }}
-                >
-                  <Paperclip size={16} />
-                </button>
-                <button
-                  className="btn"
-                  onClick={handleSendText}
-                  disabled={!draft.trim() || sending}
-                  style={{ width: 'auto', padding: '0.6rem 1rem' }}
-                >
-                  {sending ? <Loader size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={16} />}
-                </button>
-              </div>
+          {/* Lookup */}
+          <div style={{ marginTop: 'auto', borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.35rem', display: 'block' }}>
+              Add by npub
+            </label>
+            <input
+              placeholder="npub1…"
+              value={lookupNpub}
+              onChange={e => { setLookupNpub(e.target.value); setLookupStatus('idle'); }}
+              style={{ fontSize: '0.75rem', padding: '0.4rem 0.6rem', marginBottom: '0.35rem' }}
+              onKeyDown={e => e.key === 'Enter' && handleLookup()}
+            />
+            {lookupStatus === 'error' && (
+              <p style={{ fontSize: '0.7rem', color: 'var(--error)', margin: '0 0 0.35rem' }}>{lookupError}</p>
             )}
-          </>
-        )}
+            <button
+              className="btn"
+              style={{ padding: '0.4rem', fontSize: '0.75rem' }}
+              onClick={handleLookup}
+              disabled={lookupStatus === 'loading' || !lookupNpub}
+            >
+              {lookupStatus === 'loading' ? <Loader size={12} /> : 'Look up'}
+            </button>
+          </div>
+        </div>
+
+        {/* Chat area */}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {!selectedContact ? (
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+              {nostrContacts.length === 0 ? 'Add a contact by npub to start messaging.' : 'Select a contact.'}
+            </div>
+          ) : (
+            <>
+              <div style={{ paddingBottom: '0.75rem', borderBottom: '1px solid var(--border)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <User size={16} />
+                <strong style={{ fontSize: '0.9rem' }}>{selectedContact.name}</strong>
+                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                  {selectedContact.nostrPubkey ? nostrPubToNpub(selectedContact.nostrPubkey).slice(0, 20) + '…' : ''}
+                </span>
+              </div>
+
+              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '300px' }}>
+                {threadMessages.length === 0 ? (
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', marginTop: '2rem' }}>
+                    No messages yet.
+                  </div>
+                ) : threadMessages.map(msg => {
+                  const isMine = msg.fromNostrPub !== selectedContact.nostrPubkey;
+                  const keyBadge = msg.keyType === 'prekey' ? '🔑' : msg.keyType === 'session' ? '⏱' : null;
+                  return (
+                    <div key={msg.id} style={{ display: 'flex', flexDirection: 'column', alignItems: isMine ? 'flex-end' : 'flex-start' }}>
+                      <div style={{
+                        maxWidth: '75%', padding: '0.6rem 0.9rem',
+                        borderRadius: isMine ? '12px 12px 4px 12px' : '12px 12px 12px 4px',
+                        background: isMine ? 'var(--primary)' : 'var(--bg)',
+                        color: isMine ? 'white' : 'var(--text)',
+                        border: isMine ? 'none' : '1px solid var(--border)',
+                        fontSize: '0.875rem', lineHeight: 1.5,
+                      }}>
+                        {msg.type === 'text' ? (
+                          <span style={{ whiteSpace: 'pre-wrap' }}>{msg.text}</span>
+                        ) : (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <FileIcon size={16} />
+                            <span>{msg.fileName}</span>
+                            <button
+                              onClick={() => msg.fileUrl && downloadFromBlossom(msg.fileUrl).then(data => {
+                                const a = document.createElement('a');
+                                a.href = URL.createObjectURL(new Blob([data as BlobPart]));
+                                a.download = msg.fileName ?? 'file';
+                                a.click();
+                              })}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0 }}
+                            >
+                              <Download size={14} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '2px', display: 'flex', gap: '4px', alignItems: 'center' }}>
+                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {msg.verified && <Shield size={9} color="var(--success)" aria-label="Signature verified" />}
+                        {keyBadge && <span title={msg.keyType}>{keyBadge}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+                <div ref={bottomRef} />
+              </div>
+
+              {!keyOps.longTermKeys ? (
+                <div className="hint" style={{ marginTop: '1rem' }}>
+                  Select an identity in the Vault tab to send messages.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', alignItems: 'flex-end' }}>
+                  <textarea
+                    value={draft}
+                    onChange={e => setDraft(e.target.value)}
+                    placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                    onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSendText(); }}}
+                    style={{ flex: 1, minHeight: '44px', maxHeight: '120px', resize: 'vertical', fontSize: '0.875rem' }}
+                  />
+                  <input ref={fileInputRef} type="file" style={{ display: 'none' }}
+                    onChange={e => { const f = e.target.files?.[0]; if (f) handleSendFile(f); e.target.value = ''; }} />
+                  <button className="copy-btn" onClick={() => fileInputRef.current?.click()} title="Send file" style={{ padding: '0.6rem' }}>
+                    <Paperclip size={16} />
+                  </button>
+                  <button className="btn" onClick={handleSendText} disabled={!draft.trim() || sending} style={{ width: 'auto', padding: '0.6rem 1rem' }}>
+                    {sending ? <Loader size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <Send size={16} />}
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

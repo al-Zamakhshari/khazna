@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   encryptVault, decryptVault, generateKeyPair, generateSessionKey, isSessionExpired,
-  type KhaznaVault, type PQCKeyPair,
+  type KhaznaVault, type PQCKeyPair, type StoredPrekey,
   VAULT_KEY,
 } from '../utils/crypto';
-import { generateNostrKey } from '../utils/nostr';
+import { generateNostrKey, PREKEY_BATCH } from '../utils/nostr';
 
 export function useVault() {
   const [vault,    setVault]          = useState<KhaznaVault | null>(null);
@@ -28,7 +28,7 @@ export function useVault() {
     }
   }, [password]);
 
-  // ── Auth ────────────────────────────────────────────────────────────────────
+  // ── Auth ─────────────────────────────────────────────────────────────────────
 
   const initialize = useCallback(async (pwd: string) => {
     try {
@@ -75,7 +75,7 @@ export function useVault() {
     setIsNew(true);
   };
 
-  // ── Identities ───────────────────────────────────────────────────────────────
+  // ── Identities ────────────────────────────────────────────────────────────────
 
   const addIdentity = useCallback((name: string) => {
     if (!vault) return null;
@@ -90,7 +90,7 @@ export function useVault() {
     save({ ...vault, [type]: vault[type].filter(item => item.id !== id) });
   }, [vault, save]);
 
-  // ── Contacts ─────────────────────────────────────────────────────────────────
+  // ── Contacts ──────────────────────────────────────────────────────────────────
 
   const addContact = useCallback((
     name: string,
@@ -104,7 +104,22 @@ export function useVault() {
     });
   }, [vault, save]);
 
-  // ── Nostr ────────────────────────────────────────────────────────────────────
+  const updateContactSession = useCallback(async (
+    contactId: string,
+    sessionPublicKey: string,
+  ) => {
+    if (!vault) return;
+    await save({
+      ...vault,
+      contacts: vault.contacts.map(c =>
+        c.id === contactId
+          ? { ...c, sessionPublicKey, sessionFetchedAt: Date.now() }
+          : c
+      ),
+    });
+  }, [vault, save]);
+
+  // ── Nostr identity ────────────────────────────────────────────────────────────
 
   const initNostr = useCallback(async () => {
     if (!vault || vault.nostrPrivateKey) return null;
@@ -113,7 +128,7 @@ export function useVault() {
     return nostrKey;
   }, [vault, save]);
 
-  // ── Session key (forward secrecy) ─────────────────────────────────────────
+  // ── Session key (time-window forward secrecy) ─────────────────────────────────
 
   const ensureSessionKey = useCallback(async (): Promise<PQCKeyPair | null> => {
     if (!vault) return null;
@@ -125,6 +140,38 @@ export function useVault() {
     return session.keys;
   }, [vault, save]);
 
+  const rotateSessionKey = useCallback(async (): Promise<PQCKeyPair | null> => {
+    if (!vault) return null;
+    const session = generateSessionKey();
+    await save({ ...vault, sessionKey: session });
+    return session.keys;
+  }, [vault, save]);
+
+  // ── One-time prekeys (per-message forward secrecy) ────────────────────────────
+
+  const generatePrekeys = useCallback(async (count = PREKEY_BATCH): Promise<StoredPrekey[]> => {
+    if (!vault) return [];
+    const fresh: StoredPrekey[] = Array.from({ length: count }, () => ({
+      id:   crypto.randomUUID(),
+      keys: generateKeyPair(),
+    }));
+    await save({ ...vault, prekeys: [...(vault.prekeys ?? []), ...fresh] });
+    return fresh;
+  }, [vault, save]);
+
+  const consumePrekey = useCallback(async (id: string) => {
+    if (!vault?.prekeys) return;
+    await save({ ...vault, prekeys: vault.prekeys.filter(p => p.id !== id) });
+  }, [vault, save]);
+
+  const getPrekeyPrivKey = useCallback((id: string): string | null => {
+    return vault?.prekeys?.find(p => p.id === id)?.keys.privateKey ?? null;
+  }, [vault]);
+
+  const getPrekeyCount = useCallback((): number => {
+    return vault?.prekeys?.length ?? 0;
+  }, [vault]);
+
   return {
     vault,
     isLocked,
@@ -135,8 +182,14 @@ export function useVault() {
     addIdentity,
     addContact,
     removeItem,
+    updateContactSession,
     initNostr,
     ensureSessionKey,
+    rotateSessionKey,
+    generatePrekeys,
+    consumePrekey,
+    getPrekeyPrivKey,
+    getPrekeyCount,
     lock: lockVault,
     reset,
     setError,

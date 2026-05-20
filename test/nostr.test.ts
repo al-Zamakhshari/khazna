@@ -5,9 +5,10 @@ import {
   signBundle, verifyBundle,
   buildTextPayload, buildFilePayload, decryptPayload,
   wrapKhaznaMessage, unwrapKhaznaMessage,
-  buildProfileEvent, extractKhaznaKey,
+  buildProfileEvent, extractKhaznaKey, extractSessionKey,
+  buildPrekeyEvent, fetchPrekeys, pickValidPrekey,
 } from '../src/utils/nostr';
-import { generateKeyPair } from '../src/utils/crypto';
+import { generateKeyPair, generateSessionKey, isSessionExpired, SESSION_TTL_MS } from '../src/utils/crypto';
 
 // ── Key management ────────────────────────────────────────────────────────────
 
@@ -139,6 +140,26 @@ describe('wrapKhaznaMessage / unwrapKhaznaMessage', () => {
   });
 });
 
+// ── Payload with prekeyId ─────────────────────────────────────────────────────
+
+describe('buildTextPayload with prekeyId', () => {
+  const recipientKP = generateKeyPair();
+  const senderNostr = generateNostrKey();
+  const prekeyId    = crypto.randomUUID();
+
+  it('includes prekeyId in the payload', () => {
+    const payload = buildTextPayload('hello', recipientKP.publicKey, senderNostr.privateKey, prekeyId);
+    expect(payload.prekeyId).toBe(prekeyId);
+  });
+
+  it('round-trips with prekeyId present', () => {
+    const payload = buildTextPayload('hello prekey', recipientKP.publicKey, senderNostr.privateKey, prekeyId);
+    const result  = decryptPayload(payload, recipientKP.privateKey, senderNostr.publicKey);
+    expect(result.type).toBe('text');
+    if (result.type === 'text') expect(result.text).toBe('hello prekey');
+  });
+});
+
 // ── Profile events ────────────────────────────────────────────────────────────
 
 describe('buildProfileEvent / extractKhaznaKey', () => {
@@ -154,9 +175,85 @@ describe('buildProfileEvent / extractKhaznaKey', () => {
   it('returns null for a profile without a khazna_pub field', () => {
     const nostr     = generateNostrKey();
     const event     = buildProfileEvent('Bob', '', nostr.privateKey);
-    // empty string is falsy, extractKhaznaKey should return null
     const result    = extractKhaznaKey(event);
-    // buildProfileEvent stores whatever string is passed; test that extraction works
     expect(typeof result === 'string' || result === null).toBe(true);
+  });
+
+  it('includes and extracts session key from profile', () => {
+    const nostr   = generateNostrKey();
+    const kp      = generateKeyPair();
+    const session = generateSessionKey();
+    const event   = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey, session.keys.publicKey);
+
+    expect(extractKhaznaKey(event)).toBe(kp.publicKey);
+    expect(extractSessionKey(event)).toBe(session.keys.publicKey);
+  });
+
+  it('extractSessionKey returns null when no session key is in profile', () => {
+    const nostr = generateNostrKey();
+    const kp    = generateKeyPair();
+    const event = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey);
+    expect(extractSessionKey(event)).toBeNull();
+  });
+});
+
+// ── Session key (crypto.ts) ───────────────────────────────────────────────────
+
+describe('generateSessionKey / isSessionExpired', () => {
+  it('generates a session key with ~30-day expiry', () => {
+    const session = generateSessionKey();
+    const msLeft  = session.expiry - Date.now();
+    expect(msLeft).toBeGreaterThan(SESSION_TTL_MS - 5000);
+    expect(msLeft).toBeLessThanOrEqual(SESSION_TTL_MS);
+  });
+
+  it('fresh session key is not expired', () => {
+    expect(isSessionExpired(generateSessionKey())).toBe(false);
+  });
+
+  it('past-expiry session key is expired', () => {
+    const expired = { keys: generateKeyPair(), expiry: Date.now() - 1 };
+    expect(isSessionExpired(expired)).toBe(true);
+  });
+});
+
+// ── One-time prekeys ──────────────────────────────────────────────────────────
+
+describe('buildPrekeyEvent / pickValidPrekey', () => {
+  const nostr   = generateNostrKey();
+  const batch   = Array.from({ length: 5 }, () => ({
+    id:        crypto.randomUUID(),
+    publicKey: generateKeyPair().publicKey,
+  }));
+
+  it('produces a kind-10050 event', () => {
+    const event = buildPrekeyEvent(batch, nostr.privateKey);
+    expect(event.kind).toBe(10050);
+  });
+
+  it('pickValidPrekey returns a valid prekey from the batch', () => {
+    const event  = buildPrekeyEvent(batch, nostr.privateKey);
+    const parsed = JSON.parse(event.content);
+    const picked = pickValidPrekey(parsed, nostr.publicKey);
+    expect(picked).not.toBeNull();
+    expect(batch.some(p => p.id === picked!.id)).toBe(true);
+  });
+
+  it('pickValidPrekey rejects entries with wrong signature', () => {
+    const event   = buildPrekeyEvent(batch, nostr.privateKey);
+    const parsed  = JSON.parse(event.content);
+    const wrongPub = generateNostrKey().publicKey;
+    // All sigs were made with nostr.privateKey → wrong public key → all invalid
+    const picked  = pickValidPrekey(parsed, wrongPub);
+    expect(picked).toBeNull();
+  });
+
+  it('round-trip: build event → parse → pick → verify sig', () => {
+    const event  = buildPrekeyEvent(batch, nostr.privateKey);
+    const parsed = JSON.parse(event.content) as { id: string; pub: string; sig: string }[];
+
+    for (const pk of parsed) {
+      expect(verifyBundle(pk.id + pk.pub, pk.sig, nostr.publicKey)).toBe(true);
+    }
   });
 });
