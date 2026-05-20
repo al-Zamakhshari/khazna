@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react'
 import './App.css'
-import { EncryptTab } from './components/EncryptTab'
-import { DecryptTab } from './components/DecryptTab'
-import { VaultTab } from './components/VaultTab'
-import { GuideTab } from './components/GuideTab'
-import { useVault } from './hooks/useVault'
-import { Shield, Info, Sun, Moon, Database, HelpCircle, User, Lock, Unlock, X } from 'lucide-react'
+import { EncryptTab }   from './components/EncryptTab'
+import { DecryptTab }   from './components/DecryptTab'
+import { VaultTab }     from './components/VaultTab'
+import { GuideTab }     from './components/GuideTab'
+import { MessagesTab }  from './components/MessagesTab'
+import { useVault }     from './hooks/useVault'
+import { buildProfileEvent, publishEvent } from './utils/nostr'
+import { Shield, Info, Sun, Moon, Database, HelpCircle, User, Lock, Unlock, MessageSquare, X } from 'lucide-react'
 import { type PQCKeyPair } from './utils/crypto'
 
-type Tab = 'vault' | 'encrypt' | 'decrypt'
+type Tab = 'vault' | 'encrypt' | 'decrypt' | 'messages'
 
 interface ActiveIdentity {
   name: string;
@@ -17,11 +19,11 @@ interface ActiveIdentity {
 
 function App() {
   const vaultManager = useVault();
-  const [activeTab, setActiveTab] = useState<Tab>('vault')
+  const [activeTab,      setActiveTab]      = useState<Tab>('vault')
   const [activeIdentity, setActiveIdentity] = useState<ActiveIdentity | null>(null)
   const [targetPublicKey, setTargetPublicKey] = useState<string>('')
-  const [showHelp, setShowHelp] = useState(false)
-  const [theme, setTheme] = useState<'light' | 'dark'>(
+  const [showHelp,       setShowHelp]       = useState(false)
+  const [theme,          setTheme]          = useState<'light' | 'dark'>(
     (localStorage.getItem('theme') as 'light' | 'dark') || 'light'
   )
 
@@ -30,7 +32,6 @@ function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // Close help modal on Escape
   useEffect(() => {
     const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setShowHelp(false); };
     window.addEventListener('keydown', handler);
@@ -43,6 +44,17 @@ function App() {
     setActiveIdentity(null);
     vaultManager.lock();
     setActiveTab('vault');
+  };
+
+  const handleSetupNostr = async () => {
+    await vaultManager.initNostr();
+  };
+
+  const handlePublishProfile = async (displayName: string) => {
+    const { vault } = vaultManager;
+    if (!vault?.nostrPrivateKey || !activeIdentity) return;
+    const event = buildProfileEvent(displayName, activeIdentity.keys.publicKey, vault.nostrPrivateKey);
+    await publishEvent(event);
   };
 
   return (
@@ -86,23 +98,17 @@ function App() {
         )}
 
         <nav className="tabs">
-          <button
-            className={`tab-btn ${activeTab === 'vault' ? 'active' : ''}`}
-            onClick={() => setActiveTab('vault')}
-          >
-            <Database size={15} /> Vault
+          <button className={`tab-btn ${activeTab === 'vault'    ? 'active' : ''}`} onClick={() => setActiveTab('vault')}>
+            <Database      size={15} /> Vault
           </button>
-          <button
-            className={`tab-btn ${activeTab === 'encrypt' ? 'active' : ''}`}
-            onClick={() => setActiveTab('encrypt')}
-          >
-            <Lock size={15} /> Encrypt
+          <button className={`tab-btn ${activeTab === 'messages' ? 'active' : ''}`} onClick={() => setActiveTab('messages')}>
+            <MessageSquare size={15} /> Messages
           </button>
-          <button
-            className={`tab-btn ${activeTab === 'decrypt' ? 'active' : ''}`}
-            onClick={() => setActiveTab('decrypt')}
-          >
-            <Unlock size={15} /> Decrypt
+          <button className={`tab-btn ${activeTab === 'encrypt'  ? 'active' : ''}`} onClick={() => setActiveTab('encrypt')}>
+            <Lock          size={15} /> Encrypt
+          </button>
+          <button className={`tab-btn ${activeTab === 'decrypt'  ? 'active' : ''}`} onClick={() => setActiveTab('decrypt')}>
+            <Unlock        size={15} /> Decrypt
           </button>
         </nav>
 
@@ -115,17 +121,23 @@ function App() {
               onContactSelect={(pk) => { setTargetPublicKey(pk); setActiveTab('encrypt'); }}
             />
           )}
-          {activeTab === 'encrypt' && (
-            <EncryptTab
-              keys={activeIdentity?.keys || null}
-              prefilledKey={targetPublicKey}
+          {activeTab === 'messages' && (
+            <MessagesTab
+              nostrPrivKeyHex={vaultManager.vault?.nostrPrivateKey}
+              activeKhaznaKeys={activeIdentity?.keys ?? null}
+              contacts={vaultManager.vault?.contacts ?? []}
+              onAddContact={vaultManager.addContact}
+              onSetupNostr={handleSetupNostr}
+              onPublishProfile={handlePublishProfile}
+              activeIdentityName={activeIdentity?.name ?? null}
+              activeIdentityKey={activeIdentity?.keys ?? null}
             />
           )}
+          {activeTab === 'encrypt' && (
+            <EncryptTab keys={activeIdentity?.keys ?? null} prefilledKey={targetPublicKey} />
+          )}
           {activeTab === 'decrypt' && (
-            <DecryptTab
-              keys={activeIdentity?.keys || null}
-              onGoToVault={() => setActiveTab('vault')}
-            />
+            <DecryptTab keys={activeIdentity?.keys ?? null} onGoToVault={() => setActiveTab('vault')} />
           )}
         </main>
       </div>

@@ -18,6 +18,7 @@
     "@noble/post-quantum": "^0.6.1",
     "canvas-confetti": "^1.9.4",
     "lucide-react": "^1.8.0",
+    "nostr-tools": "^2.23.5",
     "qrcode.react": "^4.2.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

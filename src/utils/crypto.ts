@@ -25,6 +25,7 @@ export const MIN_PRIVATE_KEY_LEN = Math.floor(HYBRID_SK_SIZE * 4 / 3);  // 3242
 export const VAULT_KEY          = 'khazna_v3_vault';
 const PBKDF2_ITERATIONS         = 100_000;
 const HKDF_INFO                 = new TextEncoder().encode('khazna-hybrid-v1');
+export const SESSION_TTL_MS     = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 // ── Base64 helpers ────────────────────────────────────────────────────────────
 
@@ -62,11 +63,19 @@ export interface VaultContact {
   id: string;
   name: string;
   publicKey: string;
+  nostrPubkey?: string;
+}
+
+export interface SessionKey {
+  keys:    PQCKeyPair;
+  expiry:  number;   // unix timestamp ms
 }
 
 export interface KhaznaVault {
-  identities: VaultIdentity[];
-  contacts: VaultContact[];
+  identities:     VaultIdentity[];
+  contacts:       VaultContact[];
+  nostrPrivateKey?: string;   // hex — secp256k1 key for Nostr identity & routing
+  sessionKey?:    SessionKey; // rotating PQC key for forward secrecy
 }
 
 // ── Hybrid KEM core ───────────────────────────────────────────────────────────
@@ -105,6 +114,14 @@ function hybridDecapsulate(
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
+
+export function generateSessionKey(): SessionKey {
+  return { keys: generateKeyPair(), expiry: Date.now() + SESSION_TTL_MS };
+}
+
+export function isSessionExpired(session: SessionKey): boolean {
+  return Date.now() > session.expiry;
+}
 
 export function generateKeyPair(): PQCKeyPair {
   const mlkem = ml_kem768.keygen();
