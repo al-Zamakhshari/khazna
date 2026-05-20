@@ -5,10 +5,17 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 
 export const DEFAULT_BLOSSOM_SERVERS = [
   'https://blossom.band',
-  'https://cdn.satellite.earth',
+  'https://blossom.primal.net',
+  'https://nostr.download',
 ];
 
 export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
+
+// BUD-01 requires base64url (RFC 4648 §5) — not regular base64.
+// btoa() produces base64 with '+' and '/', which some servers reject.
+function toBase64Url(str: string): string {
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
 
 // ── Upload ────────────────────────────────────────────────────────────────────
 
@@ -18,7 +25,9 @@ export async function uploadToBlossom(
   servers: string[] = DEFAULT_BLOSSOM_SERVERS,
 ): Promise<string> {
   if (data.byteLength > MAX_FILE_SIZE) {
-    throw new Error(`File too large (${(data.byteLength / 1024 / 1024).toFixed(1)} MB). Maximum is ${MAX_FILE_SIZE / 1024 / 1024} MB.`);
+    throw new Error(
+      `File too large (${(data.byteLength / 1024 / 1024).toFixed(1)} MB). Maximum is ${MAX_FILE_SIZE / 1024 / 1024} MB.`
+    );
   }
 
   const hash    = bytesToHex(sha256(data));
@@ -37,10 +46,15 @@ export async function uploadToBlossom(
     },
     hexToBytes(nostrPrivKeyHex),
   );
-  const authHeader = btoa(JSON.stringify(authEvent));
-  // Use a Blob so the body is the exact bytes — avoids ArrayBuffer view-offset issues
+
+  // BUD-01: Authorization: Nostr <base64url(event_json)>
+  const authHeader = toBase64Url(JSON.stringify(authEvent));
+
+  // Send body as a typeless Blob — don't set Content-Type at all.
+  // blossom.band (and others) reject 'application/octet-stream' with HTTP 415
+  // but accept the same bytes when no Content-Type header is present.
   const slice = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  const body = new Blob([slice], { type: 'application/octet-stream' });
+  const body  = new Blob([slice]); // no type → browser sends no Content-Type header
 
   const errors: string[] = [];
 
@@ -48,25 +62,21 @@ export async function uploadToBlossom(
     try {
       const res = await fetch(`${server}/upload`, {
         method:  'PUT',
-        headers: {
-          'Authorization': `Nostr ${authHeader}`,
-          'Content-Type':  'application/octet-stream',
-        },
+        headers: { 'Authorization': `Nostr ${authHeader}` },
         body,
       });
       if (res.ok) {
         const json = await res.json().catch(() => ({}));
         return json.url ?? `${server}/${hash}`;
       }
-      errors.push(`${server}: HTTP ${res.status}`);
+      const detail = await res.text().catch(() => '');
+      errors.push(`${server}: HTTP ${res.status}${detail ? ` — ${detail.slice(0, 120)}` : ''}`);
     } catch (e: unknown) {
       errors.push(`${server}: ${e instanceof Error ? e.message : 'network error'}`);
     }
   }
 
-  throw new Error(
-    `File upload failed on all servers.\n${errors.join('\n')}\n\nTip: large files or restricted networks can cause this.`
-  );
+  throw new Error(`File upload failed:\n${errors.join('\n')}`);
 }
 
 // ── Download ──────────────────────────────────────────────────────────────────
@@ -76,8 +86,8 @@ export async function downloadFromBlossom(url: string): Promise<Uint8Array> {
   try {
     res = await fetch(url);
   } catch (e: unknown) {
-    throw new Error(`Network error downloading file: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(`Network error: ${e instanceof Error ? e.message : String(e)}`);
   }
-  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status} from ${url}`);
+  if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`);
   return new Uint8Array(await res.arrayBuffer());
 }
