@@ -5,8 +5,8 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 
 export const DEFAULT_BLOSSOM_SERVERS = [
   'https://blossom.band',
-  'https://blossom.primal.net',
-  'https://nostr.download',
+  'https://blossom.oxtr.dev',
+  'https://cdn.hzrd149.com',
 ];
 
 export const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
@@ -50,11 +50,11 @@ export async function uploadToBlossom(
   // BUD-01: Authorization: Nostr <base64url(event_json)>
   const authHeader = toBase64Url(JSON.stringify(authEvent));
 
-  // Send body as a typeless Blob — don't set Content-Type at all.
-  // blossom.band (and others) reject 'application/octet-stream' with HTTP 415
-  // but accept the same bytes when no Content-Type header is present.
+  // Use a typed Blob — the browser then auto-sets both Content-Type and Content-Length
+  // from the Blob's type and size. Do NOT override Content-Type in the headers object;
+  // letting the Blob drive it avoids charset suffixes or other browser transformations.
   const slice = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
-  const body  = new Blob([slice]); // no type → browser sends no Content-Type header
+  const body  = new Blob([slice], { type: 'application/octet-stream' });
 
   const errors: string[] = [];
 
@@ -62,7 +62,7 @@ export async function uploadToBlossom(
     try {
       const res = await fetch(`${server}/upload`, {
         method:  'PUT',
-        headers: { 'Authorization': `Nostr ${authHeader}` },
+        headers: { 'Authorization': `Nostr ${authHeader}` }, // Content-Type/Length come from the Blob
         body,
       });
       if (res.ok) {
