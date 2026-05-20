@@ -3,10 +3,10 @@ import {
   Send, Paperclip, Wifi, WifiOff, User, Copy, Check,
   RefreshCw, Shield, FileIcon, Download, Loader, Key, RotateCcw,
 } from 'lucide-react';
-import { useNostr, type NostrKeyOps } from '../hooks/useNostr';
-import { downloadFromBlossom } from '../utils/blossom';
+import { useNostr, type NostrKeyOps, type Message } from '../hooks/useNostr';
+import { downloadFromBlossom, MAX_FILE_SIZE } from '../utils/blossom';
 import { isValidNpub, nostrPubToNpub } from '../utils/nostr';
-import { type VaultContact, type SessionKey } from '../utils/crypto';
+import { decryptFile, type VaultContact, type SessionKey } from '../utils/crypto';
 
 interface MessagesTabProps {
   nostrPrivKeyHex:    string | undefined;
@@ -45,6 +45,8 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
   const [publishStatus,   setPublishStatus]    = useState<'idle' | 'loading' | 'done'>('idle');
   const [rotatingSession, setRotatingSession]  = useState(false);
   const [generatingKeys,  setGeneratingKeys]   = useState(false);
+  const [fileError,       setFileError]        = useState<string | null>(null);
+  const [downloadingId,   setDownloadingId]    = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef    = useRef<HTMLDivElement>(null);
 
@@ -171,10 +173,60 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
 
   const handleSendFile = async (file: File) => {
     if (!selectedContact) return;
+    if (file.size > MAX_FILE_SIZE) {
+      setFileError(`File is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum is 100 MB.`);
+      return;
+    }
     setSending(true);
-    try { await sendFile(file, selectedContact); }
-    catch (e) { console.error(e); }
-    finally { setSending(false); }
+    setFileError(null);
+    try {
+      await sendFile(file, selectedContact);
+    } catch (e: unknown) {
+      setFileError(e instanceof Error ? e.message : 'Failed to send file.');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleDownload = async (msg: Message) => {
+    if (!msg.fileUrl) return;
+    setDownloadingId(msg.id);
+    setFileError(null);
+    try {
+      const encryptedBlob = await downloadFromBlossom(msg.fileUrl);
+
+      // Try keys in priority order — same order as encryption was resolved
+      let decrypted: Uint8Array | null = null;
+
+      if (msg.prekeyId) {
+        const privKey = keyOps.getPrekeyPrivKey(msg.prekeyId);
+        if (privKey) {
+          try { decrypted = decryptFile(encryptedBlob, privKey); } catch { /* try next */ }
+        }
+      }
+      if (!decrypted && keyOps.sessionKeys?.privateKey) {
+        try { decrypted = decryptFile(encryptedBlob, keyOps.sessionKeys.privateKey); } catch { /* try next */ }
+      }
+      if (!decrypted && keyOps.longTermKeys?.privateKey) {
+        try { decrypted = decryptFile(encryptedBlob, keyOps.longTermKeys.privateKey); } catch { /* try next */ }
+      }
+
+      if (!decrypted) {
+        throw new Error('Could not decrypt the file. The private key may have been rotated or the file is corrupted.');
+      }
+
+      // Prekey is consumed only after successful file decryption
+      if (msg.prekeyId) await keyOps.consumePrekey(msg.prekeyId);
+
+      const a = document.createElement('a');
+      a.href     = URL.createObjectURL(new Blob([decrypted as BlobPart]));
+      a.download = msg.fileName ?? 'file';
+      a.click();
+    } catch (e: unknown) {
+      setFileError(e instanceof Error ? e.message : 'File download failed.');
+    } finally {
+      setDownloadingId(null);
+    }
   };
 
   const copyNpub = () => {
@@ -362,17 +414,17 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
                         ) : (
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <FileIcon size={16} />
-                            <span>{msg.fileName}</span>
+                            <span style={{ flex: 1, wordBreak: 'break-all' }}>{msg.fileName}</span>
                             <button
-                              onClick={() => msg.fileUrl && downloadFromBlossom(msg.fileUrl).then(data => {
-                                const a = document.createElement('a');
-                                a.href = URL.createObjectURL(new Blob([data as BlobPart]));
-                                a.download = msg.fileName ?? 'file';
-                                a.click();
-                              })}
-                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0 }}
+                              onClick={() => handleDownload(msg)}
+                              disabled={downloadingId === msg.id}
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', padding: 0, flexShrink: 0 }}
+                              title="Download and decrypt"
                             >
-                              <Download size={14} />
+                              {downloadingId === msg.id
+                                ? <Loader size={14} style={{ animation: 'spin 1s linear infinite' }} />
+                                : <Download size={14} />
+                              }
                             </button>
                           </div>
                         )}
@@ -387,6 +439,13 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
                 })}
                 <div ref={bottomRef} />
               </div>
+
+              {fileError && (
+                <div className="alert alert-error" style={{ marginTop: '0.75rem', fontSize: '0.8rem' }}>
+                  <span>{fileError}</span>
+                  <button onClick={() => setFileError(null)} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontSize: '1rem' }}>×</button>
+                </div>
+              )}
 
               {!keyOps.longTermKeys ? (
                 <div className="hint" style={{ marginTop: '1rem' }}>

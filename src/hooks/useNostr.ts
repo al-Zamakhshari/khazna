@@ -25,6 +25,9 @@ export interface Message {
   timestamp:    number;
   verified:     boolean;
   keyType:      'prekey' | 'session' | 'longterm' | 'unknown';
+  // Retained for file messages until the file is downloaded+decrypted,
+  // then consumed. For text messages the prekey is consumed at receive time.
+  prekeyId?:    string;
 }
 
 export interface NostrKeyOps {
@@ -66,8 +69,12 @@ export function useNostr(
       const decrypted = tryDecrypt(payload, keyOps, senderNostrPubKey);
       if (!decrypted) return;
 
-      // Consume one-time prekey after successful decryption
-      if (payload.prekeyId) {
+      const isFile = payload.type === 'file';
+
+      // For text messages: consume the prekey immediately — plaintext is already in memory.
+      // For file messages: keep the prekey until the user downloads + decrypts the file,
+      // because the file blob on Blossom is encrypted with the same prekey.
+      if (payload.prekeyId && !isFile) {
         keyOps.consumePrekey(payload.prekeyId);
       }
 
@@ -78,6 +85,7 @@ export function useNostr(
         timestamp:    event.created_at * 1000,
         verified:     true,
         keyType:      payload.prekeyId ? 'prekey' : (payload.sessionKey ? 'session' : 'longterm'),
+        prekeyId:     isFile ? payload.prekeyId : undefined,
         ...decrypted,
       };
 
