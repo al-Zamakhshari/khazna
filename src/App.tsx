@@ -9,7 +9,7 @@ import { useVault }     from './hooks/useVault'
 import { buildProfileEvent, publishEvent } from './utils/nostr'
 import {
   Shield, Info, Sun, Moon, Database, HelpCircle,
-  User, Lock, Unlock, MessageSquare, X,
+  User, Lock, Unlock, MessageSquare, X, AlertTriangle, RefreshCw,
 } from 'lucide-react'
 import { type PQCKeyPair } from './utils/crypto'
 
@@ -61,6 +61,16 @@ function App() {
       setShowFooterTip(false);
     }
   }, [vm.isLocked]);
+
+  // Auto-renew session key when it's < 1 day from expiry and the vault is unlocked
+  useEffect(() => {
+    if (vm.isLocked || !vm.vault?.sessionKey) return;
+    const daysLeft = (vm.vault.sessionKey.expiry - Date.now()) / 86_400_000;
+    if (daysLeft > 0 && daysLeft < 1) {
+      vm.rotateSessionKey();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vm.isLocked, vm.vault?.sessionKey?.expiry]);
 
   const toggleTheme = () => setTheme(p => p === 'light' ? 'dark' : 'light');
 
@@ -128,6 +138,42 @@ function App() {
           )}
         </div>
       </header>
+
+      {/* Session expiry warning banner */}
+      {vm.isSessionExpiringSoon && vm.vault?.sessionKey && (
+        <div className="alert alert-info" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <AlertTriangle size={15} style={{ flexShrink: 0, color: 'var(--warning, #f59e0b)' }} />
+          <span style={{ flex: 1 }}>
+            Your session key expires in <strong>{vm.sessionDaysLeft}d</strong> — click Renew to extend forward secrecy.
+          </span>
+          <button
+            className="copy-btn"
+            style={{ whiteSpace: 'nowrap' }}
+            onClick={async () => {
+              await vm.rotateSessionKey();
+              if (activeIdentity && vm.vault?.nostrPrivateKey) {
+                const keys = await vm.ensureSessionKey();
+                await publishEvent(buildProfileEvent(
+                  activeIdentity.name,
+                  activeIdentity.keys.publicKey,
+                  vm.vault.nostrPrivateKey,
+                  keys?.publicKey,
+                ));
+              }
+            }}
+          >
+            <RefreshCw size={12} /> Renew
+          </button>
+        </div>
+      )}
+
+      {/* Cross-tab sync banner */}
+      {vm.crossTabUpdate && (
+        <div className="alert alert-info" style={{ marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <RefreshCw size={15} style={{ flexShrink: 0 }} />
+          <span>Vault updated in another tab — this view has been refreshed.</span>
+        </div>
+      )}
 
       <div className="card">
         {activeIdentity && (

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import {
   generateNostrKey, nostrPubToNpub, npubToNostrPub, isValidNpub,
   signBundle, verifyBundle,
@@ -7,6 +7,8 @@ import {
   wrapKhaznaMessage, unwrapKhaznaMessage,
   buildProfileEvent, extractKhaznaKey, extractSessionKey,
   buildPrekeyEvent, fetchPrekeys, pickValidPrekey,
+  buildKeyRotationEvent, buildDeleteEvent,
+  fetchPrekeysFresh, KEY_ROTATION_KIND, MAX_PREKEY_AGE_MS,
 } from '../src/utils/nostr';
 import { generateKeyPair, generateSessionKey, isSessionExpired, SESSION_TTL_MS } from '../src/utils/crypto';
 
@@ -255,5 +257,179 @@ describe('buildPrekeyEvent / pickValidPrekey', () => {
     for (const pk of parsed) {
       expect(verifyBundle(pk.id + pk.pub, pk.sig, nostr.publicKey)).toBe(true);
     }
+  });
+});
+
+// ── Adversarial prekey scenarios ──────────────────────────────────────────────
+
+describe('pickValidPrekey — adversarial', () => {
+  const owner  = generateNostrKey();
+  const attacker = generateNostrKey();
+  const batch  = Array.from({ length: 3 }, () => ({
+    id: crypto.randomUUID(), publicKey: generateKeyPair().publicKey,
+  }));
+
+  it('rejects prekeys signed by a different identity (relay substitution attack)', () => {
+    // Attacker builds a prekey event with their own signature
+    const event  = buildPrekeyEvent(batch, attacker.privateKey);
+    const parsed = JSON.parse(event.content);
+    // When checked against the owner's pubkey, all sigs should fail
+    expect(pickValidPrekey(parsed, owner.publicKey)).toBeNull();
+  });
+
+  it('rejects a batch where one entry has a tampered public key', () => {
+    const event  = buildPrekeyEvent(batch, owner.privateKey);
+    const parsed: { id: string; pub: string; sig: string }[] = JSON.parse(event.content);
+    // Tamper the first entry's pub key (signature was over original id+pub)
+    parsed[0].pub = generateKeyPair().publicKey;
+    // The tampered entry must fail; if there are still valid entries the function still finds them
+    // But let's use a single-entry batch to guarantee null
+    const singleEntry = [parsed[0]]; // only the tampered one
+    expect(pickValidPrekey(singleEntry, owner.publicKey)).toBeNull();
+  });
+
+  it('accepts valid entries even when some are tampered', () => {
+    const event  = buildPrekeyEvent(batch, owner.privateKey);
+    const parsed: { id: string; pub: string; sig: string }[] = JSON.parse(event.content);
+    // Tamper just the first entry
+    parsed[0].pub = generateKeyPair().publicKey;
+    // The remaining two valid entries should still be picked
+    const picked = pickValidPrekey(parsed, owner.publicKey);
+    expect(picked).not.toBeNull();
+    expect(batch.slice(1).some(p => p.id === picked!.id)).toBe(true);
+  });
+});
+
+// ── extractSessionKey — expired timestamp ─────────────────────────────────────
+
+describe('extractSessionKey — expiry', () => {
+  it('returns null when the session key expiry timestamp is in the past', () => {
+    const nostr  = generateNostrKey();
+    const kp     = generateKeyPair();
+    // Build a profile with a session key, then manually back-date the expiry
+    const event  = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey, kp.publicKey);
+    const meta   = JSON.parse(event.content);
+    meta.khazna_session_expiry = Math.floor(Date.now() / 1000) - 1; // 1 second in the past
+    const patchedEvent = { ...event, content: JSON.stringify(meta) };
+    expect(extractSessionKey(patchedEvent)).toBeNull();
+  });
+
+  it('returns the key when expiry is in the future', () => {
+    const nostr  = generateNostrKey();
+    const kp     = generateKeyPair();
+    const session = generateSessionKey();
+    const event  = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey, session.keys.publicKey);
+    expect(extractSessionKey(event)).toBe(session.keys.publicKey);
+  });
+});
+
+// ── buildKeyRotationEvent ─────────────────────────────────────────────────────
+
+describe('buildKeyRotationEvent', () => {
+  const nostr    = generateNostrKey();
+  const newKP    = generateKeyPair();
+
+  it('produces a kind-10051 event', () => {
+    const event = buildKeyRotationEvent(newKP.publicKey, 2, nostr.privateKey);
+    expect(event.kind).toBe(KEY_ROTATION_KIND);
+  });
+
+  it('embeds the new public key in content', () => {
+    const event  = buildKeyRotationEvent(newKP.publicKey, 2, nostr.privateKey);
+    const content = JSON.parse(event.content);
+    expect(content.newKhaznaPublicKey).toBe(newKP.publicKey);
+    expect(content.keyVersion).toBe(2);
+  });
+
+  it('is signed by the old Nostr key (pubkey matches)', () => {
+    const event = buildKeyRotationEvent(newKP.publicKey, 2, nostr.privateKey);
+    expect(event.pubkey).toBe(nostr.publicKey);
+  });
+});
+
+// ── buildDeleteEvent (NIP-09) ─────────────────────────────────────────────────
+
+describe('buildDeleteEvent', () => {
+  const nostr = generateNostrKey();
+  const fakeEventId = '0'.repeat(64); // 64-char hex placeholder
+
+  it('produces kind-5 event', () => {
+    const event = buildDeleteEvent(fakeEventId, nostr.privateKey);
+    expect(event.kind).toBe(5);
+  });
+
+  it('references the target event id in tags', () => {
+    const event = buildDeleteEvent(fakeEventId, nostr.privateKey);
+    const eTag  = event.tags.find(t => t[0] === 'e');
+    expect(eTag?.[1]).toBe(fakeEventId);
+  });
+
+  it('is signed by the caller\'s Nostr key', () => {
+    const event = buildDeleteEvent(fakeEventId, nostr.privateKey);
+    expect(event.pubkey).toBe(nostr.publicKey);
+  });
+});
+
+// ── fetchPrekeysFresh — staleness logic (mocked) ──────────────────────────────
+
+describe('fetchPrekeysFresh — freshness validation', () => {
+  const nostr = generateNostrKey();
+  const batch = Array.from({ length: 3 }, () => ({
+    id: crypto.randomUUID(), publicKey: generateKeyPair().publicKey,
+  }));
+
+  it('returns prekeys when the event is fresh (< MAX_PREKEY_AGE_MS old)', async () => {
+    const pool = await import('nostr-tools/pool');
+    const freshEvent = buildPrekeyEvent(batch, nostr.privateKey);
+    // created_at is set to now by buildPrekeyEvent → eventAge ≈ 0 ms
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValueOnce([freshEvent]);
+
+    const result = await fetchPrekeysFresh(nostr.publicKey, ['wss://mock']);
+    expect(result).not.toBeNull();
+    expect(result!.prekeys.length).toBe(3);
+    expect(result!.eventAge).toBeLessThan(5000); // should be nearly 0
+    vi.restoreAllMocks();
+  });
+
+  it('returns null when the event is older than MAX_PREKEY_AGE_MS', async () => {
+    const pool = await import('nostr-tools/pool');
+    const staleEvent = buildPrekeyEvent(batch, nostr.privateKey);
+    // Override created_at to be 91 days in the past
+    const staleTs = Math.floor((Date.now() - MAX_PREKEY_AGE_MS - 1000) / 1000);
+    const staleEventOld = { ...staleEvent, created_at: staleTs };
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValueOnce([staleEventOld]);
+
+    const result = await fetchPrekeysFresh(nostr.publicKey, ['wss://mock']);
+    expect(result).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it('returns null when no events are found', async () => {
+    const pool = await import('nostr-tools/pool');
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValueOnce([]);
+
+    const result = await fetchPrekeysFresh(nostr.publicKey, ['wss://mock']);
+    expect(result).toBeNull();
+    vi.restoreAllMocks();
+  });
+});
+
+// ── decryptPayload — additional adversarial cases ─────────────────────────────
+
+describe('decryptPayload — adversarial', () => {
+  const recipientKP = generateKeyPair();
+  const senderNostr = generateNostrKey();
+
+  it('throws when payload bundle is empty string', () => {
+    const payload = buildTextPayload('test', recipientKP.publicKey, senderNostr.privateKey);
+    const tampered = { ...payload, bundle: '' };
+    // verifyBundle will fail because the hash changes
+    expect(() => decryptPayload(tampered, recipientKP.privateKey, senderNostr.publicKey)).toThrow();
+  });
+
+  it('throws when sig field is zeroed out', () => {
+    const payload = buildTextPayload('test', recipientKP.publicKey, senderNostr.privateKey);
+    const tampered = { ...payload, sig: '00'.repeat(64) };
+    expect(() => decryptPayload(tampered, recipientKP.privateKey, senderNostr.publicKey)).toThrow(/signature invalid/i);
   });
 });

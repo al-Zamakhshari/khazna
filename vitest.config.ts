@@ -12,5 +12,15 @@ export default defineConfig({
     globals: true,
     testTimeout: 30000,
     reporters: ['verbose'],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'lcov'],
+      include: ['src/utils/crypto.ts', 'src/utils/nostr.ts'],
+      thresholds: {
+        lines:     75,
+        functions: 75,
+        branches:  70,
+      },
+    },
   },
 });

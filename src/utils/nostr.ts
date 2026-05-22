@@ -190,9 +190,11 @@ export function extractSessionKey(profileEvent: NostrEvent): string | null {
 
 // ── One-time prekeys (kind 10050, replaceable) ────────────────────────────────
 
-export const PREKEY_KIND      = 10050;
-export const PREKEY_BATCH     = 50;
-export const SESSION_CACHE_MS = 6 * 60 * 60 * 1000; // 6 hours
+export const PREKEY_KIND        = 10050;
+export const KEY_ROTATION_KIND  = 10051; // custom: signed identity-key rotation announcement
+export const PREKEY_BATCH       = 50;
+export const SESSION_CACHE_MS   = 6 * 60 * 60 * 1000;   // 6 hours
+export const MAX_PREKEY_AGE_MS  = 90 * 24 * 60 * 60 * 1000; // 90 days
 
 export interface SignedPrekey {
   id:  string;   // UUID
@@ -232,6 +234,36 @@ export async function fetchPrekeys(
     return JSON.parse(events.sort((a, b) => b.created_at - a.created_at)[0].content);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Fetch prekeys and validate freshness.
+ * Returns null if the latest prekey event is older than MAX_PREKEY_AGE_MS,
+ * indicating the contact may have stale or tampered prekeys on the relay.
+ */
+export async function fetchPrekeysFresh(
+  nostrPubHex: string,
+  relays: string[] = DEFAULT_RELAYS,
+): Promise<{ prekeys: SignedPrekey[]; eventAge: number } | null> {
+  const pool   = new SimplePool();
+  const events = await pool.querySync(relays, { kinds: [PREKEY_KIND], authors: [nostrPubHex] });
+  pool.close(relays);
+  if (!events.length) return null;
+
+  const latest  = events.sort((a, b) => b.created_at - a.created_at)[0];
+  const eventAge = Date.now() - latest.created_at * 1000;
+
+  if (eventAge > MAX_PREKEY_AGE_MS) {
+    // Prekey event is too old — contact should have published fresh prekeys by now
+    return null;
+  }
+
+  try {
+    const prekeys = JSON.parse(latest.content) as SignedPrekey[];
+    return { prekeys, eventAge };
+  } catch {
+    return null;
   }
 }
 
@@ -292,6 +324,50 @@ export async function publishEvent(
   const pool = new SimplePool();
   await Promise.allSettled(pool.publish(relays, event));
   pool.close(relays);
+}
+
+// ── Identity key rotation (kind 10051) ────────────────────────────────────────
+
+/**
+ * Build a key-rotation announcement.  The old Nostr key signs the event,
+ * proving the rotation was authorised by the legitimate identity holder.
+ *
+ * Content: { newKhaznaPublicKey, keyVersion, rotatedAt }
+ * Verifiers can confirm: event.pubkey === sha256(oldNostrPrivKey) and
+ * the new key is the one to use going forward.
+ */
+export function buildKeyRotationEvent(
+  newKhaznaPublicKey: string,
+  keyVersion: number,
+  nostrPrivKeyHex: string,
+): NostrEvent {
+  return finalizeEvent(
+    {
+      kind:       KEY_ROTATION_KIND,
+      content:    JSON.stringify({ newKhaznaPublicKey, keyVersion, rotatedAt: Math.floor(Date.now() / 1000) }),
+      tags:       [],
+      created_at: Math.floor(Date.now() / 1000),
+    },
+    hexToBytes(nostrPrivKeyHex),
+  );
+}
+
+// ── NIP-09 deletion request ───────────────────────────────────────────────────
+
+/**
+ * Build a NIP-09 deletion event for a gift-wrap message event.
+ * Relays are NOT required to honour deletion — callers must inform users.
+ */
+export function buildDeleteEvent(eventId: string, nostrPrivKeyHex: string): NostrEvent {
+  return finalizeEvent(
+    {
+      kind:       5, // NIP-09 deletion
+      content:    'Deleted by sender',
+      tags:       [['e', eventId]],
+      created_at: Math.floor(Date.now() / 1000),
+    },
+    hexToBytes(nostrPrivKeyHex),
+  );
 }
 
 export function subscribeToGiftWraps(

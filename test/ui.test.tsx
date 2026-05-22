@@ -56,11 +56,22 @@ describe('VaultTab', () => {
     expect(btn).toBeEnabled();
   });
 
+  /** Helper: fill passwords, click Create Vault, tick the acknowledgment checkbox, confirm. */
+  async function createVaultWithAck(password: string) {
+    await user.type(screen.getByPlaceholderText('Master Password'), password);
+    await user.type(screen.getByPlaceholderText('Confirm Password'), password);
+    await user.click(screen.getAllByText('Create Vault')[0]);
+    // Warning modal should now be visible — tick the checkbox then confirm
+    await waitFor(() => expect(screen.getByRole('checkbox')).toBeInTheDocument());
+    await user.click(screen.getByRole('checkbox'));
+    // Click the modal's "Create Vault" button (the second one in the DOM)
+    const buttons = screen.getAllByText('Create Vault');
+    await user.click(buttons[buttons.length - 1]);
+  }
+
   it('initializes vault and shows identity tab', async () => {
     render(<VaultWrapper />);
-    await user.type(screen.getByPlaceholderText('Master Password'), 'pass-1234');
-    await user.type(screen.getByPlaceholderText('Confirm Password'), 'pass-1234');
-    await user.click(screen.getByText('Create Vault'));
+    await createVaultWithAck('pass-1234');
 
     await waitFor(() =>
       expect(screen.getByText('Add New Identity')).toBeInTheDocument()
@@ -71,9 +82,7 @@ describe('VaultTab', () => {
   it('shows locked state when vault exists in localStorage', async () => {
     // Initialize first
     const { unmount } = render(<VaultWrapper />);
-    await user.type(screen.getByPlaceholderText('Master Password'), 'my-pass');
-    await user.type(screen.getByPlaceholderText('Confirm Password'), 'my-pass');
-    await user.click(screen.getByText('Create Vault'));
+    await createVaultWithAck('my-pass');
     await waitFor(() => screen.getByText('Add New Identity'));
     unmount();
 
@@ -88,9 +97,7 @@ describe('VaultTab', () => {
   it('shows error on wrong unlock password', async () => {
     // Init vault
     const { unmount } = render(<VaultWrapper />);
-    await user.type(screen.getByPlaceholderText('Master Password'), 'correct-pass');
-    await user.type(screen.getByPlaceholderText('Confirm Password'), 'correct-pass');
-    await user.click(screen.getByText('Create Vault'));
+    await createVaultWithAck('correct-pass');
     await waitFor(() => screen.getByText('Add New Identity'));
     unmount();
 
@@ -101,15 +108,13 @@ describe('VaultTab', () => {
     await user.click(screen.getByText('Unlock Vault'));
 
     await waitFor(() =>
-      expect(screen.getByText('Invalid password.')).toBeInTheDocument()
+      expect(screen.getByText(/invalid password/i)).toBeInTheDocument()
     );
   });
 
   it('creates an identity and shows the post-creation callout', async () => {
     render(<VaultWrapper />);
-    await user.type(screen.getByPlaceholderText('Master Password'), 'pass-123');
-    await user.type(screen.getByPlaceholderText('Confirm Password'), 'pass-123');
-    await user.click(screen.getByText('Create Vault'));
+    await createVaultWithAck('pass-123');
 
     await waitFor(() => screen.getByText('Add New Identity'));
     await user.click(screen.getByText('Add New Identity'));

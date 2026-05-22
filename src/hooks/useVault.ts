@@ -2,9 +2,17 @@ import { useState, useEffect, useCallback } from 'react';
 import {
   encryptVault, decryptVault, generateKeyPair, generateSessionKey, isSessionExpired,
   type KhaznaVault, type PQCKeyPair, type StoredPrekey,
-  VAULT_KEY,
+  VAULT_KEY, bytesToBase64,
 } from '../utils/crypto';
 import { generateNostrKey, PREKEY_BATCH } from '../utils/nostr';
+import { splitSecret, combineShares, encodeShareFile, decodeShareFile } from '../utils/recovery';
+import { randomBytes } from '@noble/ciphers/utils.js';
+
+// ── In-memory rate limiting (resets on page reload — intentional) ─────────────
+const LOCKOUT_THRESHOLD  = 10;
+const LOCKOUT_DURATION_MS = 60_000; // 1 minute
+let _failedAttempts = 0;
+let _lockoutUntil   = 0;
 
 export function useVault() {
   const [vault,    setVault]          = useState<KhaznaVault | null>(null);
@@ -12,6 +20,11 @@ export function useVault() {
   const [isNew,    setIsNew]          = useState(false);
   const [error,    setError]          = useState('');
   const [password, setMasterPassword] = useState('');
+  // Unlock rate-limiting UI state
+  const [lockoutUntil,   setLockoutUntil]   = useState(0);
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  // Cross-tab sync
+  const [crossTabUpdate, setCrossTabUpdate] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(VAULT_KEY);
@@ -46,20 +59,63 @@ export function useVault() {
   }, []);
 
   const unlock = useCallback(async (pwd: string) => {
+    // Rate-limit check
+    if (Date.now() < _lockoutUntil) {
+      const secs = Math.ceil((_lockoutUntil - Date.now()) / 1000);
+      setError(`Too many failed attempts. Try again in ${secs}s.`);
+      return false;
+    }
+
     const saved = localStorage.getItem(VAULT_KEY);
     if (!saved) return false;
     try {
       const decrypted = await decryptVault(saved, pwd);
+      // Successful unlock — reset counters
+      _failedAttempts = 0;
+      _lockoutUntil   = 0;
+      setFailedAttempts(0);
+      setLockoutUntil(0);
       setVault(decrypted);
       setMasterPassword(pwd);
       setIsLocked(false);
       setError('');
       return true;
     } catch {
-      setError('Invalid password.');
+      _failedAttempts += 1;
+      setFailedAttempts(_failedAttempts);
+      if (_failedAttempts >= LOCKOUT_THRESHOLD) {
+        _lockoutUntil = Date.now() + LOCKOUT_DURATION_MS;
+        setLockoutUntil(_lockoutUntil);
+        _failedAttempts = 0;
+        setFailedAttempts(0);
+        setError(`Too many failed attempts. Locked for ${LOCKOUT_DURATION_MS / 1000}s.`);
+      } else {
+        setError(`Invalid password. ${LOCKOUT_THRESHOLD - _failedAttempts} attempts remaining.`);
+      }
       return false;
     }
   }, []);
+
+  // ── Cross-tab vault sync ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const handler = (e: StorageEvent) => {
+      if (e.key !== VAULT_KEY || e.newValue === null || e.newValue === e.oldValue) return;
+      if (isLocked || !password) return;
+      // Another tab updated the vault — silently re-decrypt with our password
+      decryptVault(e.newValue, password)
+        .then(updated => {
+          setVault(updated);
+          setCrossTabUpdate(true);
+          setTimeout(() => setCrossTabUpdate(false), 4000);
+        })
+        .catch(() => {
+          // Password mismatch means the other tab changed the master password
+          setCrossTabUpdate(true);
+        });
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, [isLocked, password]);
 
   const lockVault = useCallback(() => {
     setVault(null);
@@ -90,6 +146,24 @@ export function useVault() {
     save({ ...vault, [type]: vault[type].filter(item => item.id !== id) });
   }, [vault, save]);
 
+  // Rotate an identity's keypair — old key is preserved in keyHistory for decrypting old messages.
+  const rotateIdentityKey = useCallback(async (identityId: string): Promise<PQCKeyPair | null> => {
+    if (!vault) return null;
+    const identity = vault.identities.find(i => i.id === identityId);
+    if (!identity) return null;
+    const newKeys   = generateKeyPair();
+    const newVersion = (identity.keyVersion ?? 1) + 1;
+    const historyEntry = { keys: identity.keys, version: identity.keyVersion ?? 1, rotatedAt: Date.now() };
+    const updatedIdentity = {
+      ...identity,
+      keys:       newKeys,
+      keyVersion: newVersion,
+      keyHistory: [...(identity.keyHistory ?? []), historyEntry],
+    };
+    await save({ ...vault, identities: vault.identities.map(i => i.id === identityId ? updatedIdentity : i) });
+    return newKeys;
+  }, [vault, save]);
+
   // ── Contacts ──────────────────────────────────────────────────────────────────
 
   const addContact = useCallback((
@@ -100,7 +174,17 @@ export function useVault() {
     if (!vault) return;
     save({
       ...vault,
-      contacts: [...vault.contacts, { id: crypto.randomUUID(), name, publicKey, nostrPubkey }],
+      contacts: [...vault.contacts, { id: crypto.randomUUID(), name, publicKey, nostrPubkey, verified: false }],
+    });
+  }, [vault, save]);
+
+  const verifyContact = useCallback(async (contactId: string) => {
+    if (!vault) return;
+    await save({
+      ...vault,
+      contacts: vault.contacts.map(c =>
+        c.id === contactId ? { ...c, verified: true } : c
+      ),
     });
   }, [vault, save]);
 
@@ -187,6 +271,54 @@ export function useVault() {
     return vault?.prekeys?.length ?? 0;
   }, [vault]);
 
+  // ── Shamir recovery ───────────────────────────────────────────────────────────
+
+  /**
+   * Generates a 32-byte random recovery key, splits it 2-of-3, stores
+   * a separate localStorage copy of the vault encrypted with that key
+   * (so it can be restored without the master password), and returns
+   * the three share files as downloadable JSON strings.
+   */
+  const setupRecovery = useCallback(async (): Promise<string[] | null> => {
+    if (!vault) return null;
+    const recoveryKey    = randomBytes(32);
+    const recoveryBlob   = await encryptVault(vault, bytesToBase64(recoveryKey));
+    localStorage.setItem(`${VAULT_KEY}_recovery`, recoveryBlob);
+
+    const shares = splitSecret(recoveryKey, 2, 3);
+    return shares.map((s, i) => encodeShareFile(s, i + 1, 3, 2));
+  }, [vault]);
+
+  /**
+   * Given two recovery share JSON strings, reconstructs the recovery key,
+   * decrypts the recovery vault blob, and replaces the current vault in
+   * localStorage (without needing the master password).
+   * Returns true on success.
+   */
+  const restoreFromShares = useCallback(async (shareJsonA: string, shareJsonB: string): Promise<boolean> => {
+    try {
+      const shareA    = decodeShareFile(shareJsonA);
+      const shareB    = decodeShareFile(shareJsonB);
+      const recovered = combineShares([shareA, shareB]);
+      const blob      = localStorage.getItem(`${VAULT_KEY}_recovery`);
+      if (!blob) throw new Error('No recovery vault found in this browser.');
+      // Verify it decrypts correctly, then store as main vault
+      await decryptVault(blob, bytesToBase64(recovered)); // throws if wrong
+      localStorage.setItem(VAULT_KEY, blob);
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  // Session expiry helpers
+  const sessionDaysLeft = vault?.sessionKey
+    ? Math.max(0, Math.ceil((vault.sessionKey.expiry - Date.now()) / 86_400_000))
+    : null;
+  const isSessionExpiringSoon = sessionDaysLeft !== null && sessionDaysLeft < 3;
+  const isLockedOut      = Date.now() < lockoutUntil;
+  const lockoutSecondsLeft = isLockedOut ? Math.ceil((lockoutUntil - Date.now()) / 1000) : 0;
+
   return {
     vault,
     isLocked,
@@ -196,12 +328,14 @@ export function useVault() {
     initialize,
     addIdentity,
     addContact,
+    verifyContact,
     removeItem,
     updateContactSession,
     initNostr,
     initMessaging,
     ensureSessionKey,
     rotateSessionKey,
+    rotateIdentityKey,
     generatePrekeys,
     consumePrekey,
     getPrekeyPrivKey,
@@ -209,5 +343,17 @@ export function useVault() {
     lock: lockVault,
     reset,
     setError,
+    // Rate-limiting
+    isLockedOut,
+    lockoutSecondsLeft,
+    failedAttempts,
+    // Session state
+    sessionDaysLeft,
+    isSessionExpiringSoon,
+    // Cross-tab sync
+    crossTabUpdate,
+    // Shamir recovery
+    setupRecovery,
+    restoreFromShares,
   };
 }

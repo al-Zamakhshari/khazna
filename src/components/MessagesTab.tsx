@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Send, Paperclip, Wifi, WifiOff, User, Copy, Check,
   RefreshCw, Shield, FileIcon, Download, Loader,
-  RotateCcw, ChevronDown, ChevronUp, Lock,
+  RotateCcw, ChevronDown, ChevronUp, Lock, Trash2, AlertTriangle, ShieldCheck,
 } from 'lucide-react';
 import { useNostr, type NostrKeyOps, type Message } from '../hooks/useNostr';
 import { downloadFromBlossom, MAX_FILE_SIZE } from '../utils/blossom';
@@ -10,7 +10,7 @@ import {
   isValidNpub, nostrPubToNpub,
   buildPrekeyEvent, buildProfileEvent, publishEvent,
 } from '../utils/nostr';
-import { decryptFile, type VaultContact, type SessionKey } from '../utils/crypto';
+import { decryptFile, type VaultContact, type SessionKey, contactFingerprint } from '../utils/crypto';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
   const bottomRef    = useRef<HTMLDivElement>(null);
 
   const { myNpub, messages, status, sendText, sendFile,
-          lookupContact, publishPrekeys } = useNostr(nostrPrivKeyHex, keyOps);
+          lookupContact, publishPrekeys, deleteMessage } = useNostr(nostrPrivKeyHex, keyOps);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -416,15 +416,36 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
           ) : (
             <>
               {/* Thread header */}
-              <div style={{ paddingBottom: '0.75rem', borderBottom: '1px solid var(--border)', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div className="pub-avatar" style={{ background: pubkeyColor(selectedContact.nostrPubkey ?? '0'), width: 26, height: 26, fontSize: '0.7rem' }}>
-                  {pubkeyInitial(selectedContact.nostrPubkey ?? '0')}
+              <div style={{ paddingBottom: '0.75rem', borderBottom: '1px solid var(--border)', marginBottom: '0.75rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div className="pub-avatar" style={{ background: pubkeyColor(selectedContact.nostrPubkey ?? '0'), width: 26, height: 26, fontSize: '0.7rem' }}>
+                    {pubkeyInitial(selectedContact.nostrPubkey ?? '0')}
+                  </div>
+                  <strong style={{ fontSize: '0.9rem' }}>{selectedContact.name}</strong>
+                  {selectedContact.verified
+                    ? <span title="Fingerprint verified"><ShieldCheck size={13} color="var(--success)" /></span>
+                    : <span title="Fingerprint not yet verified"><AlertTriangle size={13} color="#f59e0b" /></span>}
+                  <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {selectedContact.nostrPubkey ? nostrPubToNpub(selectedContact.nostrPubkey).slice(0, 24) + '…' : ''}
+                  </span>
                 </div>
-                <strong style={{ fontSize: '0.9rem' }}>{selectedContact.name}</strong>
-                <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {selectedContact.nostrPubkey ? nostrPubToNpub(selectedContact.nostrPubkey).slice(0, 24) + '…' : ''}
-                </span>
+                {selectedContact.publicKey && (
+                  <div style={{ marginTop: '4px', fontSize: '0.68rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <span>Safety #: <strong style={{ fontFamily: 'monospace', letterSpacing: '0.08em' }}>{contactFingerprint(selectedContact.publicKey)}</strong></span>
+                    <span style={{ opacity: 0.6 }}>— compare over a trusted channel to verify identity</span>
+                  </div>
+                )}
               </div>
+
+              {/* Unverified contact warning (shown on first message only) */}
+              {!selectedContact.verified && threadMessages.length === 0 && (
+                <div className="alert alert-info" style={{ marginBottom: '0.75rem', fontSize: '0.78rem', gap: '8px' }}>
+                  <AlertTriangle size={13} style={{ flexShrink: 0, color: '#f59e0b' }} />
+                  <span>
+                    You haven't verified this contact's fingerprint yet. Compare the safety number above over a trusted channel (phone/in-person) before sending sensitive messages.
+                  </span>
+                </div>
+              )}
 
               {/* Messages */}
               <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '300px', paddingRight: '2px' }}>
@@ -469,6 +490,19 @@ export const MessagesTab: React.FC<MessagesTabProps> = ({
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         {msg.verified && <Shield size={9} color="var(--success)" aria-label="Verified" />}
                         {keyBadge && <span title={msg.keyType}>{keyBadge}</span>}
+                        {isMine && (
+                          <button
+                            title="Request deletion (relays are not required to honour this)"
+                            onClick={async () => {
+                              if (confirm('Send a deletion request to relays?\n\nNote: relays are not required to honour deletion requests — deleted messages may still exist on some relays.')) {
+                                try { await deleteMessage(msg.id); } catch { /* silent */ }
+                              }
+                            }}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, color: 'var(--text-muted)', opacity: 0.5, lineHeight: 1 }}
+                          >
+                            <Trash2 size={9} />
+                          </button>
+                        )}
                       </div>
                     </div>
                   );

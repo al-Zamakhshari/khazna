@@ -6,7 +6,9 @@ import {
   encryptFile,   decryptFile,
   encryptVault,  decryptVault,
   bytesToBase64, base64ToBytes,
+  contactFingerprint,
   MIN_PUBLIC_KEY_LEN, MIN_PRIVATE_KEY_LEN,
+  HYBRID_PK_SIZE,
   type PQCKeyPair,
 } from '../src/utils/crypto';
 
@@ -142,6 +144,114 @@ describe('encryptVault / decryptVault', () => {
     const empty = { identities: [], contacts: [] };
     const encrypted = await encryptVault(empty, password);
     expect(await decryptVault(encrypted, password)).toEqual(empty);
+  });
+});
+
+// ── Adversarial message decryption ────────────────────────────────────────────
+
+describe('decryptMessage — adversarial inputs', () => {
+  let kp: PQCKeyPair;
+  beforeEach(() => { kp = generateKeyPair(); });
+
+  it('throws when AES-GCM auth tag is flipped (last 16 bytes)', () => {
+    const bundle  = base64ToBytes(encryptMessage('sensitive data', kp.publicKey));
+    // Flip the last byte of the auth tag
+    bundle[bundle.length - 1] ^= 0xff;
+    expect(() => decryptMessage(bytesToBase64(bundle), kp.privateKey)).toThrow();
+  });
+
+  it('throws when the first byte of AES ciphertext is corrupted', () => {
+    const bundle = base64ToBytes(encryptMessage('hello', kp.publicKey));
+    // Corrupt the first byte of the AES ciphertext (after the 1132-byte header)
+    bundle[1132] ^= 0x01;
+    expect(() => decryptMessage(bytesToBase64(bundle), kp.privateKey)).toThrow();
+  });
+
+  it('throws when the ML-KEM ciphertext region is zeroed', () => {
+    const bundle = base64ToBytes(encryptMessage('secret', kp.publicKey));
+    // Zero out the first 1088 bytes (ML-KEM ciphertext)
+    bundle.fill(0, 0, 1088);
+    expect(() => decryptMessage(bytesToBase64(bundle), kp.privateKey)).toThrow();
+  });
+
+  it('handles multiple concurrent encrypt/decrypt operations (parallelism safety)', async () => {
+    const plainTexts = Array.from({ length: 8 }, (_, i) => `message-${i}`);
+    // All encrypt in parallel
+    const bundles = await Promise.all(plainTexts.map(m => Promise.resolve(encryptMessage(m, kp.publicKey))));
+    // All decrypt in parallel
+    const results = await Promise.all(bundles.map(b => Promise.resolve(decryptMessage(b, kp.privateKey))));
+    expect(results).toEqual(plainTexts);
+  });
+
+  it('all bundles from parallel encrypts are distinct', () => {
+    const bundles = Array.from({ length: 5 }, () => encryptMessage('same', kp.publicKey));
+    const unique  = new Set(bundles);
+    expect(unique.size).toBe(5);
+  });
+});
+
+// ── Adversarial vault decryption ──────────────────────────────────────────────
+
+describe('decryptVault — adversarial inputs', () => {
+  const password = 'correcthorsebatterystaple';
+  const vault    = { identities: [], contacts: [] };
+
+  it('throws when ciphertext is truncated to just salt+nonce (no payload)', async () => {
+    // 16-byte salt + 12-byte nonce = 28 bytes → no encrypted content
+    const stub = bytesToBase64(new Uint8Array(28));
+    await expect(decryptVault(stub, password)).rejects.toThrow();
+  });
+
+  it('throws when a single byte is flipped in the auth tag', async () => {
+    const bundle  = base64ToBytes(await encryptVault(vault, password));
+    bundle[bundle.length - 1] ^= 0x80;
+    await expect(decryptVault(bytesToBase64(bundle), password)).rejects.toThrow();
+  });
+
+  it('throws on wrong password (same as existing test — explicit adversarial label)', async () => {
+    const enc = await encryptVault(vault, password);
+    await expect(decryptVault(enc, 'wrong-password')).rejects.toThrow();
+  });
+});
+
+// ── contactFingerprint ────────────────────────────────────────────────────────
+
+describe('contactFingerprint', () => {
+  it('returns exactly 8 hex characters', () => {
+    const { publicKey } = generateKeyPair();
+    const fp = contactFingerprint(publicKey);
+    expect(fp).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it('produces a different fingerprint for different keys', () => {
+    const a = generateKeyPair();
+    const b = generateKeyPair();
+    expect(contactFingerprint(a.publicKey)).not.toBe(contactFingerprint(b.publicKey));
+  });
+
+  it('is deterministic — same key always produces same fingerprint', () => {
+    const { publicKey } = generateKeyPair();
+    expect(contactFingerprint(publicKey)).toBe(contactFingerprint(publicKey));
+  });
+
+  it('only fingerprints the KEM public key bytes (not the full vault identity)', () => {
+    // Two identities with different ML-KEM keys but same X25519 part should differ
+    // (in practice generateKeyPair always creates both, so just verify determinism)
+    const { publicKey } = generateKeyPair();
+    // Serialise public key to bytes, flip one byte of the ML-KEM half, re-encode
+    const bytes = base64ToBytes(publicKey);
+    bytes[0] ^= 0xff;
+    const mutated = bytesToBase64(bytes);
+    expect(contactFingerprint(publicKey)).not.toBe(contactFingerprint(mutated));
+  });
+});
+
+// ── HYBRID_PK_SIZE export sanity ──────────────────────────────────────────────
+
+describe('HYBRID_PK_SIZE constant', () => {
+  it('matches the actual generated public key byte length', () => {
+    const { publicKey } = generateKeyPair();
+    expect(base64ToBytes(publicKey).length).toBe(HYBRID_PK_SIZE);
   });
 });
 

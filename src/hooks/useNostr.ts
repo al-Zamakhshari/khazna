@@ -7,7 +7,7 @@ import {
   buildTextPayload, buildFilePayload, buildProfileEvent,
   buildPrekeyEvent, fetchPrekeys, pickValidPrekey,
   publishEvent, subscribeToGiftWraps, lookupContact, nostrPubToNpub,
-  fetchProfile, extractSessionKey,
+  fetchProfile, extractSessionKey, buildDeleteEvent,
   decryptPayload, DEFAULT_RELAYS, SESSION_CACHE_MS,
   type KhaznaPayload,
 } from '../utils/nostr';
@@ -208,6 +208,16 @@ export function useNostr(
     await publishEvent(event);
   }, [nostrPrivKeyHex]);
 
+  // ── Delete message (NIP-09) ───────────────────────────────────────────────────
+
+  const deleteMessage = useCallback(async (eventId: string) => {
+    if (!nostrPrivKeyHex) throw new Error('Nostr key not configured.');
+    const deleteEvent = buildDeleteEvent(eventId, nostrPrivKeyHex);
+    await publishEvent(deleteEvent);
+    // Remove from local state immediately (relay deletion is best-effort)
+    setMessages(prev => prev.filter(m => m.id !== eventId));
+  }, [nostrPrivKeyHex]);
+
   return {
     myNpub,
     myNostrPub,
@@ -218,6 +228,7 @@ export function useNostr(
     publishProfile,
     publishPrekeys,
     lookupContact,
+    deleteMessage,
   };
 }
 

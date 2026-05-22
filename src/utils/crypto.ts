@@ -53,10 +53,18 @@ export interface PQCKeyPair {
   privateKey: string;  // base64( mlkem_sk(2400)  || x25519_sk(32)  )
 }
 
+export interface IdentityKeyHistoryEntry {
+  keys:      PQCKeyPair;
+  version:   number;
+  rotatedAt: number; // unix ms
+}
+
 export interface VaultIdentity {
-  id: string;
-  name: string;
-  keys: PQCKeyPair;
+  id:          string;
+  name:        string;
+  keys:        PQCKeyPair;
+  keyVersion?: number;     // bumped on each rotation; undefined = version 1
+  keyHistory?: IdentityKeyHistoryEntry[]; // old keys kept for decrypting historical messages
 }
 
 export interface VaultContact {
@@ -66,6 +74,15 @@ export interface VaultContact {
   nostrPubkey?: string;
   sessionPublicKey?: string;    // cached from their Nostr profile
   sessionFetchedAt?: number;    // unix ms — for cache staleness check
+  verified?: boolean;           // user has verified fingerprint out-of-band
+}
+
+/** First 8 hex characters of SHA-256(kemPublicKeyBytes) — Signal-style safety number. */
+export function contactFingerprint(kemPublicKeyB64: string): string {
+  const bytes = base64ToBytes(kemPublicKeyB64);
+  const hashBytes = sha256(bytes);
+  // Convert to hex manually (no import of bytesToHex needed — sha256 returns Uint8Array)
+  return Array.from(hashBytes.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 export interface SessionKey {
