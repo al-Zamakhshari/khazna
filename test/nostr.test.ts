@@ -5,10 +5,11 @@ import {
   signBundle, verifyBundle,
   buildTextPayload, buildFilePayload, decryptPayload,
   wrapKhaznaMessage, unwrapKhaznaMessage,
-  buildProfileEvent, extractKhaznaKey, extractSessionKey,
+  buildProfileEvent, extractKhaznaKey, extractSessionKey, extractDisplayName,
   buildPrekeyEvent, fetchPrekeys, pickValidPrekey,
   buildKeyRotationEvent, buildDeleteEvent,
-  fetchPrekeysFresh, KEY_ROTATION_KIND, MAX_PREKEY_AGE_MS,
+  fetchPrekeysFresh, fetchProfile, lookupContact, publishEvent,
+  KEY_ROTATION_KIND, MAX_PREKEY_AGE_MS,
 } from '../src/utils/nostr';
 import { generateKeyPair, generateSessionKey, isSessionExpired, SESSION_TTL_MS } from '../src/utils/crypto';
 
@@ -410,6 +411,128 @@ describe('fetchPrekeysFresh — freshness validation', () => {
 
     const result = await fetchPrekeysFresh(nostr.publicKey, ['wss://mock']);
     expect(result).toBeNull();
+    vi.restoreAllMocks();
+  });
+});
+
+// ── extractDisplayName ────────────────────────────────────────────────────────
+
+describe('extractDisplayName', () => {
+  const nostr = generateNostrKey();
+  const kp    = generateKeyPair();
+
+  it('extracts name field from profile event', () => {
+    const event = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey);
+    expect(extractDisplayName(event)).toBe('Alice');
+  });
+
+  it('falls back to display_name when name is absent', () => {
+    const nostr2 = generateNostrKey();
+    const event  = buildProfileEvent('', kp.publicKey, nostr2.privateKey);
+    // Manually patch content to use display_name instead of name
+    const meta   = JSON.parse(event.content);
+    delete meta.name;
+    meta.display_name = 'Bob';
+    const patched = { ...event, content: JSON.stringify(meta) };
+    expect(extractDisplayName(patched)).toBe('Bob');
+  });
+
+  it('returns empty string when neither name nor display_name is present', () => {
+    const nostr3 = generateNostrKey();
+    const event  = buildProfileEvent('', kp.publicKey, nostr3.privateKey);
+    const meta   = JSON.parse(event.content);
+    delete meta.name;
+    const patched = { ...event, content: JSON.stringify(meta) };
+    expect(extractDisplayName(patched)).toBe('');
+  });
+
+  it('returns empty string on malformed JSON content', () => {
+    const badEvent = { pubkey: nostr.publicKey, content: '{not valid json', kind: 0, tags: [], created_at: 0, id: '', sig: '' };
+    expect(extractDisplayName(badEvent)).toBe('');
+  });
+});
+
+// ── fetchProfile (mocked) ─────────────────────────────────────────────────────
+
+describe('fetchProfile — mocked relay', () => {
+  const nostr = generateNostrKey();
+  const kp    = generateKeyPair();
+
+  it('returns the most recent kind-0 event', async () => {
+    const pool  = await import('nostr-tools/pool');
+    const event = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey);
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValueOnce([event]);
+
+    const result = await fetchProfile(nostr.publicKey, ['wss://mock']);
+    expect(result).not.toBeNull();
+    expect(extractKhaznaKey(result!)).toBe(kp.publicKey);
+    vi.restoreAllMocks();
+  });
+
+  it('returns null when relay returns no events', async () => {
+    const pool = await import('nostr-tools/pool');
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValueOnce([]);
+
+    const result = await fetchProfile(nostr.publicKey, ['wss://mock']);
+    expect(result).toBeNull();
+    vi.restoreAllMocks();
+  });
+});
+
+// ── lookupContact (mocked) ────────────────────────────────────────────────────
+
+describe('lookupContact — mocked relay', () => {
+  const nostr = generateNostrKey();
+  const kp    = generateKeyPair();
+
+  it('returns contact info when profile has a khazna_pub', async () => {
+    const pool  = await import('nostr-tools/pool');
+    const event = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey);
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValue([event]);
+
+    const npub   = nostrPubToNpub(nostr.publicKey);
+    const result = await lookupContact(npub, ['wss://mock']);
+    expect(result).not.toBeNull();
+    expect(result!.khaznaPublicKey).toBe(kp.publicKey);
+    expect(result!.nostrPubKey).toBe(nostr.publicKey);
+    vi.restoreAllMocks();
+  });
+
+  it('returns null when profile has no khazna_pub', async () => {
+    const pool  = await import('nostr-tools/pool');
+    const nostr2 = generateNostrKey();
+    // Build a profile without a khazna_pub
+    const event  = buildProfileEvent('', '', nostr2.privateKey);
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValue([event]);
+
+    const npub   = nostrPubToNpub(nostr2.publicKey);
+    const result = await lookupContact(npub, ['wss://mock']);
+    expect(result).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it('returns null on relay timeout (no events)', async () => {
+    const pool = await import('nostr-tools/pool');
+    vi.spyOn(pool.SimplePool.prototype, 'querySync').mockResolvedValue([]);
+
+    const npub   = nostrPubToNpub(nostr.publicKey);
+    const result = await lookupContact(npub, ['wss://mock']);
+    expect(result).toBeNull();
+    vi.restoreAllMocks();
+  });
+});
+
+// ── publishEvent (mocked) ─────────────────────────────────────────────────────
+
+describe('publishEvent — mocked relay', () => {
+  it('calls pool.publish and resolves without throwing', async () => {
+    const pool  = await import('nostr-tools/pool');
+    const nostr = generateNostrKey();
+    const kp    = generateKeyPair();
+    const event = buildProfileEvent('Alice', kp.publicKey, nostr.privateKey);
+
+    vi.spyOn(pool.SimplePool.prototype, 'publish').mockReturnValue([Promise.resolve('ok')] as never);
+    await expect(publishEvent(event, ['wss://mock'])).resolves.toBeUndefined();
     vi.restoreAllMocks();
   });
 });

@@ -5,6 +5,7 @@ import {
   encryptMessage, decryptMessage,
   encryptFile,   decryptFile,
   encryptVault,  decryptVault,
+  protectIdentity, unprotectIdentity,
   bytesToBase64, base64ToBytes,
   contactFingerprint,
   MIN_PUBLIC_KEY_LEN, MIN_PRIVATE_KEY_LEN,
@@ -252,6 +253,32 @@ describe('HYBRID_PK_SIZE constant', () => {
   it('matches the actual generated public key byte length', () => {
     const { publicKey } = generateKeyPair();
     expect(base64ToBytes(publicKey).length).toBe(HYBRID_PK_SIZE);
+  });
+});
+
+// ── protectIdentity / unprotectIdentity ───────────────────────────────────────
+
+describe('protectIdentity / unprotectIdentity', () => {
+  const password = 'identity-guard-password';
+
+  it('round-trips a keypair through password-protected storage', async () => {
+    const kp      = generateKeyPair();
+    const stored  = await protectIdentity(kp, password);
+    const recovered = await unprotectIdentity(stored, password);
+    expect(recovered.publicKey).toBe(kp.publicKey);
+    expect(recovered.privateKey).toBe(kp.privateKey);
+  });
+
+  it('throws when unprotecting with wrong password', async () => {
+    const stored = await protectIdentity(generateKeyPair(), password);
+    await expect(unprotectIdentity(stored, 'wrong')).rejects.toThrow();
+  });
+
+  it('produces a unique ciphertext on each protect call (random salt)', async () => {
+    const kp = generateKeyPair();
+    const a  = await protectIdentity(kp, password);
+    const b  = await protectIdentity(kp, password);
+    expect(a).not.toBe(b);
   });
 });
 
