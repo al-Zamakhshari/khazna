@@ -351,10 +351,12 @@ export const VaultTab: React.FC<VaultTabProps> = ({
                 {/* Post-creation callout */}
                 {isNew && (
                   <div className="new-identity-callout">
-                    <Sparkles size={14} />
-                    Identity created! Copy your <strong>Public Address</strong> below and share it with anyone who wants to send you encrypted messages.
+                    <Sparkles size={14} style={{ flexShrink: 0 }} />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      Identity created! Copy your <strong>Public Address</strong> below and share it with anyone who wants to send you encrypted messages.
+                    </span>
                     <button
-                      style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontSize: '1rem', lineHeight: 1 }}
+                      style={{ flexShrink: 0, background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontSize: '1rem', lineHeight: 1, padding: 0 }}
                       onClick={() => setNewlyCreatedId(null)}
                     >×</button>
                   </div>
