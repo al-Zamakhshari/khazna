@@ -166,30 +166,32 @@ export const VaultTab: React.FC<VaultTabProps> = ({
         {/* Vault-loss acknowledgment modal */}
         {showVaultWarning && (
           <div className="modal-overlay" onClick={() => setShowVaultWarning(false)}>
-            <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+            <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '440px', width: '100%', boxSizing: 'border-box', overflow: 'hidden' }}>
               <button className="modal-close" onClick={() => setShowVaultWarning(false)} aria-label="Close"><X size={15} /></button>
               <h3 style={{ margin: '0 0 1rem', fontSize: '1rem', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <Shield size={18} color="var(--error)" /> Important — read before continuing
+                <Shield size={18} color="var(--error)" style={{ flexShrink: 0 }} /> Important — read before continuing
               </h3>
               <div style={{ fontSize: '0.875rem', lineHeight: 1.6, marginBottom: '1.25rem', color: 'var(--text)' }}>
                 <p style={{ margin: '0 0 0.75rem' }}>
                   Your vault is protected by your master password. <strong>If you forget this password, your vault — and all keys, contacts and messages inside it — is permanently unrecoverable.</strong>
                 </p>
                 <p style={{ margin: '0 0 0.75rem' }}>
-                  There is no reset option, no recovery email, and no way for anyone to help you. The encryption cannot be reversed without your password.
+                  There is no reset option, no recovery email, and no way for anyone to help you.
                 </p>
                 <p style={{ margin: 0 }}>
                   Back up your vault file after creation (Vault → Backup &amp; Restore).
                 </p>
               </div>
-              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', fontSize: '0.875rem', marginBottom: '1.25rem' }}>
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', cursor: 'pointer', fontSize: '0.875rem', marginBottom: '1.25rem', width: '100%', boxSizing: 'border-box' }}>
                 <input
                   type="checkbox"
                   checked={vaultWarningAck}
                   onChange={e => setVaultWarningAck(e.target.checked)}
-                  style={{ marginTop: '2px', flexShrink: 0 }}
+                  style={{ marginTop: '3px', flexShrink: 0, width: '15px', height: '15px' }}
                 />
-                I understand my password cannot be recovered. I will keep it safe and back up my vault file.
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  I understand my password cannot be recovered. I will keep it safe and back up my vault file.
+                </span>
               </label>
               <button
                 className="btn"
