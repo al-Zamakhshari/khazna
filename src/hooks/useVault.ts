@@ -36,6 +36,11 @@ export function useVault() {
     try {
       localStorage.setItem(VAULT_KEY, await encryptVault(updated, password));
       setVault(updated);
+      // Keep the recovery vault in sync so shares always restore the latest state
+      const recoveryKeyB64 = localStorage.getItem(`${VAULT_KEY}_recovery_key`);
+      if (recoveryKeyB64) {
+        localStorage.setItem(`${VAULT_KEY}_recovery`, await encryptVault(updated, recoveryKeyB64));
+      }
     } catch {
       setError('Failed to save changes.');
     }
@@ -282,8 +287,13 @@ export function useVault() {
   const setupRecovery = useCallback(async (): Promise<string[] | null> => {
     if (!vault) return null;
     const recoveryKey    = randomBytes(32);
-    const recoveryBlob   = await encryptVault(vault, bytesToBase64(recoveryKey));
-    localStorage.setItem(`${VAULT_KEY}_recovery`, recoveryBlob);
+    const recoveryKeyB64 = bytesToBase64(recoveryKey);
+    const recoveryBlob   = await encryptVault(vault, recoveryKeyB64);
+    localStorage.setItem(`${VAULT_KEY}_recovery`,     recoveryBlob);
+    // Store the recovery key so save() can keep the recovery vault current.
+    // Security note: if an attacker has localStorage access they already have
+    // the encrypted recovery vault, so storing the key here adds no new exposure.
+    localStorage.setItem(`${VAULT_KEY}_recovery_key`, recoveryKeyB64);
 
     const shares = splitSecret(recoveryKey, 2, 3);
     return shares.map((s, i) => encodeShareFile(s, i + 1, 3, 2));

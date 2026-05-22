@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { useVault } from '../hooks/useVault';
 import { QRCodeSVG } from 'qrcode.react';
-import { signBundle, verifyBundle } from '../utils/nostr';
+import { signBundle, verifyBundle, buildKeyRotationEvent, buildProfileEvent, publishEvent } from '../utils/nostr';
 import { getPublicKey } from 'nostr-tools/pure';
 import { hexToBytes } from '@noble/hashes/utils.js';
 
@@ -111,7 +111,14 @@ export const VaultTab: React.FC<VaultTabProps> = ({
           return;
         }
       } catch {
-        // Not JSON — assume legacy raw base64 blob (backups exported before signing was added)
+        // Not JSON — legacy raw base64 blob (exported without a Nostr key before signing was added)
+        const ok = window.confirm(
+          'This backup file has no cryptographic signature and cannot be verified as authentic.\n\n' +
+          'Restoring an unverified file could silently replace your contacts with attacker-controlled keys.\n\n' +
+          'Only continue if you exported this file yourself from a trusted device.\n\n' +
+          'Restore anyway?'
+        );
+        if (!ok) return;
         localStorage.setItem(VAULT_KEY, content);
       }
       window.location.reload();
@@ -386,8 +393,20 @@ export const VaultTab: React.FC<VaultTabProps> = ({
                       className="copy-btn"
                       title={`Rotate keypair (v${id.keyVersion ?? 1})`}
                       onClick={async () => {
-                        if (confirm(`Rotate the keypair for "${id.name}"?\n\nThis generates a new public key. Contacts will need to re-fetch your profile before they can send new messages to you.\n\nOld keys are kept to decrypt historical messages.`)) {
-                          await rotateIdentityKey(id.id);
+                        if (!confirm(`Rotate the keypair for "${id.name}"?\n\nThis generates a new public key. Contacts will need to re-fetch your profile before they can send new messages to you.\n\nOld keys are kept to decrypt historical messages.`)) return;
+                        const newKeys = await rotateIdentityKey(id.id);
+                        if (!newKeys) { manager.setError('Key rotation failed.'); return; }
+                        // Announce rotation + publish updated profile to Nostr relays
+                        const priv = manager.vault?.nostrPrivateKey;
+                        if (priv) {
+                          const sessionPub = manager.vault?.sessionKey?.keys.publicKey;
+                          const newVersion = (id.keyVersion ?? 1) + 1;
+                          try {
+                            await publishEvent(buildKeyRotationEvent(newKeys.publicKey, newVersion, priv));
+                            await publishEvent(buildProfileEvent(id.name, newKeys.publicKey, priv, sessionPub));
+                          } catch {
+                            // Relay publish failure is non-fatal — key is already rotated locally
+                          }
                         }
                       }}
                     >
